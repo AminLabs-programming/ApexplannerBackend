@@ -105,3 +105,20 @@ class TemplateMetaCache(Base):
     period_key = Column(String(10), primary_key=True)   # تاریخ کلید دوره
     data_json = Column(Text, nullable=False, default="{}")
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class RestorePoint(Base):
+    """سیستم restore point برای بازیابی داده‌ها در صورت خرابی یا عملیات حساس.
+    
+    این جدول قبل از عملیات مهم (مثل همگام‌سازی با ناتیون، حذف گروهی، و غیره)
+    یک نقطه بازیابی ایجاد می‌کند تا بتوان در صورت نیاز داده‌ها را بازگرداند.
+    """
+    __tablename__ = "restore_points"
+
+    id = Column(String(64), primary_key=True)  # هش یکتا برای هر restore point
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    operation_type = Column(String(32), nullable=False, index=True)  # نوع عملیات
+    restore_data_json = Column(Text, nullable=False, default="{}")  # داده‌های قابل بازیابی
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    owner = relationship("User", backref="restore_points")
