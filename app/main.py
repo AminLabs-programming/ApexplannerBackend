@@ -82,6 +82,15 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/")
+def root():
+    # صفحه‌ی خالی روی آدرس اصلی سرویس، فقط برای این‌که وقتی کسی مستقیم
+    # https://diplomatic-prosperity-production.up.railway.app/ رو باز می‌کنه
+    # به‌جای 404، تأیید بگیره سرویس بالاست. خود اپ (PWA) از این مسیر استفاده
+    # نمی‌کنه؛ اپ روی GitHub Pages جداست و فقط درخواست‌های API رو به اینجا می‌زنه.
+    return {"service": "Apex Planner API", "status": "ok", "docs": "/docs"}
+
+
 # ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
@@ -502,6 +511,16 @@ def bot_delete_plan_item(chat_id: int, item_id: str, _=Depends(verify_bot_key), 
 
 
 @app.post("/bot/set-group/{chat_id}")
+def bot_set_group(chat_id: int, group_id: int, _=Depends(verify_bot_key), db: Session = Depends(get_db)):
+    """وقتی کاربر توی یک گروه تلگرام دستور مرتبط با «مقصد گزارش» رو می‌زنه،
+    بات این اندپوینت رو صدا می‌زنه تا telegram_group_id حساب کاربر ست بشه."""
+    user = db.query(models.User).filter(models.User.telegram_chat_id == chat_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="این چت به هیچ حسابی وصل نشده — اول با /link در بات وصل کن")
+    user.telegram_group_id = group_id
+    db.commit()
+    db.refresh(user)
+    return {"ok": True, "telegram_group_id": user.telegram_group_id}
 
 
 @app.post("/bot/ban-by-chat/{chat_id}")
