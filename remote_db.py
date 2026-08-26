@@ -103,10 +103,21 @@ def link_account(chat_id: int, username: str) -> dict:
 
 
 def get_all_local_chat_ids() -> list:
-    """این تابع دیگه لازم نیست (بکند خودش می‌تونه همه‌ی کاربرها رو لیست کنه)
-    ولی برای سازگاری با کدهای قدیمی که ممکنه صداش بزنن، لیست خالی برمی‌گردونه.
-    اگه بات به لیست همه‌ی کاربرها نیاز داشت، از admin/members در بکند استفاده کن."""
-    return []
+    """قبلاً از دیتابیس محلی SQLite لیست chat_id های ثبت‌شده رو می‌داد.
+    حالا منبع حقیقت بکنده: لیست همه‌ی telegram_chat_id هایی که به یک حساب
+    اپ وصل شدن (با /link) و بن نشدن برمی‌گرده. جاب‌های زمان‌بندی‌شده‌ی بات
+    (چک‌لیست صبح، چک‌این‌ها، گزارش شب) این رو با chat_id ادمین ترکیب می‌کنن."""
+    r = _get("/bot/active-chat-ids")
+    r.raise_for_status()
+    return r.json()
+
+
+def get_active_group_ids() -> list:
+    """لیست یکتای group_id هایی که حداقل یک عضو (غیر بن‌شده) گزارشش رو
+    بهشون وصل کرده. برای job گزارش شبانه‌ی گروهی استفاده می‌شه."""
+    r = _get("/bot/active-groups")
+    r.raise_for_status()
+    return r.json()
 
 
 def get_user_name(chat_id: int) -> str:

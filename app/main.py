@@ -632,3 +632,32 @@ def bot_group_report(group_id: int, date: str, _=Depends(verify_bot_key), db: Se
             completed_items=completed, total_items=len(items),
         ))
     return result
+
+
+@app.get("/bot/active-groups", response_model=List[int])
+def bot_active_groups(_=Depends(verify_bot_key), db: Session = Depends(get_db)):
+    """لیست یکتای group_id هایی که حداقل یک عضو (غیر بن‌شده) بهشون وصله —
+    Job گزارش شبانه‌ی گروهی این رو صدا می‌زنه تا بدونه به کدوم گروه‌ها پیام
+    بفرسته، بدون نیاز به هاردکد کردن group_id توی کد بات."""
+    rows = (
+        db.query(models.User.telegram_group_id)
+        .filter(models.User.telegram_group_id.isnot(None), models.User.is_banned == False)
+        .distinct()
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+@app.get("/bot/active-chat-ids", response_model=List[int])
+def bot_active_chat_ids(_=Depends(verify_bot_key), db: Session = Depends(get_db)):
+    """لیست همه‌ی telegram_chat_id هایی که به یک حساب وصل شدن (با /link) و
+    بن نشدن. جاب‌های زمان‌بندی‌شده‌ی بات (چک‌لیست صبح، چک‌این‌ها، گزارش شب و
+    غیره) این رو صدا می‌زنن تا بدونن به کدوم چت‌های خصوصی پیام بفرستن —
+    قبلاً این کار با یک دیتابیس محلی SQLite انجام می‌شد؛ حالا منبع حقیقت
+    همین بکنده."""
+    rows = (
+        db.query(models.User.telegram_chat_id)
+        .filter(models.User.telegram_chat_id.isnot(None), models.User.is_banned == False)
+        .all()
+    )
+    return [r[0] for r in rows]
