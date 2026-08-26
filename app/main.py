@@ -191,6 +191,11 @@ def update_plan_item(item_id: str, payload: schemas.PlanItemUpdate, user: models
             setattr(item, field, val)
     db.commit()
     db.refresh(item)
+    if item.notion_page_id and notion_sync.is_configured():
+        try:
+            notion_sync.push_plan_item(item)
+        except Exception as e:
+            print(f"[notion push failed] item={item.id} err={e}")  # توی Railway logs دیده می‌شه
     return _plan_item_out(item)
 
 

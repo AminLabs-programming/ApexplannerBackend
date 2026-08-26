@@ -77,6 +77,23 @@ def page_to_plan_dict(page: dict) -> dict:
     }
 
 
+def push_plan_item(item) -> bool:
+    """آپدیت وضعیت یک plan_item در Notion (جهت اپ -> Notion).
+    فقط وقتی آیتم notion_page_id داشته باشه (یعنی از Notion سینک شده) کار می‌کنه."""
+    if not is_configured() or not item.notion_page_id:
+        return False
+    client = _get_client()
+    client.pages.update(
+        page_id=item.notion_page_id,
+        properties={
+            "Status": {"checkbox": bool(item.status)},
+            "StudyMinutes": {"number": item.study_minutes or 0},
+            "TestCount": {"number": item.test_count or 0},
+        },
+    )
+    return True
+
+
 def fetch_plan_items(date_filter: Optional[str] = None) -> list:
     """آیتم‌های برنامه را از دیتابیس Notion می‌خواند (در صورت نیاز فیلترشده روی تاریخ)."""
     if not is_configured():
