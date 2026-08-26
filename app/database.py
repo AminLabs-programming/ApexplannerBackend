@@ -30,3 +30,21 @@ def get_db():
 def init_db():
     from . import models
     models.Base.metadata.create_all(bind=engine)
+    _run_lightweight_migrations()
+
+
+def _run_lightweight_migrations():
+    """create_all فقط جدول‌های جدید رو می‌سازه، نه ستون جدید روی جدول موجود.
+    چون این سرویس روی Railway از قبل دیتابیس داره، اینجا با یک کوئری ساده
+    چک می‌کنیم ستون‌های جدید هست یا نه و در صورت نیاز اضافه‌شون می‌کنیم
+    (بدون نیاز به Alembic برای این تغییرات کوچیک)."""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    if "plan_items" not in inspector.get_table_names():
+        return
+    existing_cols = {c["name"] for c in inspector.get_columns("plan_items")}
+    if "notion_page_id" not in existing_cols:
+        with engine.connect() as conn:
+            col_type = "VARCHAR(64)" if not DATABASE_URL.startswith("sqlite") else "TEXT"
+            conn.execute(text(f"ALTER TABLE plan_items ADD COLUMN notion_page_id {col_type}"))
+            conn.commit()

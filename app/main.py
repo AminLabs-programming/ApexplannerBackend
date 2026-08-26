@@ -17,7 +17,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import models, schemas, auth
+from . import models, schemas, auth, notion_sync
 from .database import get_db, init_db
 
 app = FastAPI(title="Apex Planner API", version="1.0.0")
@@ -415,6 +415,79 @@ def admin_delete_member(user_id: int, admin: models.User = Depends(get_current_a
     db.delete(u)
     db.commit()
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Notion sync — فقط ادمین. برنامه‌ی خودِ ادمین (owner_id = admin.id) از دیتابیس
+# Notion خونده و توی جدول plan_items درج/آپدیت می‌شه. اگه آیتمی قبلاً از همین
+# Notion page سینک شده باشه (notion_page_id ذخیره‌شده)، به‌جای ساختن رکورد
+# تکراری، همون رکورد آپدیت می‌شه.
+# ---------------------------------------------------------------------------
+@app.get("/admin/notion/status", response_model=schemas.NotionStatusOut)
+def admin_notion_status(admin: models.User = Depends(get_current_admin)):
+    return schemas.NotionStatusOut(
+        configured=notion_sync.is_configured(),
+        database_id_set=bool(notion_sync.NOTION_DATABASE_ID),
+    )
+
+
+@app.post("/admin/notion/sync", response_model=schemas.NotionSyncOut)
+def admin_notion_sync(
+    payload: schemas.NotionSyncRequest,
+    admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    if not notion_sync.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="تنظیمات Notion پیکربندی نشده است. NOTION_API_KEY و NOTION_DATABASE_ID را در Railway ست کنید.",
+        )
+    try:
+        notion_items = notion_sync.fetch_plan_items(date_filter=payload.date)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"خطا در ارتباط با Notion: {e}")
+
+    created = 0
+    updated = 0
+    for it in notion_items:
+        if not it["date"]:
+            continue  # آیتم بدون تاریخ (ناقص) رد می‌شه
+        existing = (
+            db.query(models.PlanItem)
+            .filter(
+                models.PlanItem.owner_id == admin.id,
+                models.PlanItem.notion_page_id == it["notion_page_id"],
+            )
+            .first()
+        )
+        if existing:
+            existing.name = it["name"]
+            existing.date = it["date"]
+            existing.category = it["category"]
+            existing.status = it["status"]
+            existing.study_minutes = it["study_minutes"]
+            existing.test_count = it["test_count"]
+            existing.time_label = it["time_label"]
+            updated += 1
+        else:
+            db.add(models.PlanItem(
+                id=new_id(),
+                owner_id=admin.id,
+                name=it["name"],
+                date=it["date"],
+                category=it["category"],
+                status=it["status"],
+                study_minutes=it["study_minutes"],
+                test_count=it["test_count"],
+                time_label=it["time_label"],
+                notion_page_id=it["notion_page_id"],
+            ))
+            created += 1
+
+    db.commit()
+    return schemas.NotionSyncOut(created=created, updated=updated, total_from_notion=len(notion_items))
 
 
 # ---------------------------------------------------------------------------

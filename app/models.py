@@ -51,6 +51,9 @@ class PlanItem(Base):
     test_count = Column(Integer, nullable=False, default=0)
     time_label = Column(String(64), nullable=True, default="")
     notes = Column(Text, nullable=True, default="")
+    # اگه این آیتم از Notion همگام‌سازی شده، شناسه‌ی page نوشن اینجا ذخیره می‌شه
+    # تا sync بعدی همون آیتم رو آپدیت کنه، نه این‌که یک کپی جدید بسازه.
+    notion_page_id = Column(String(64), nullable=True, index=True, default=None)
 
     owner = relationship("User", back_populates="plan_items")
 

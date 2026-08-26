@@ -179,6 +179,24 @@ class BanRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Notion sync (admin only)
+# ---------------------------------------------------------------------------
+class NotionStatusOut(BaseModel):
+    configured: bool
+    database_id_set: bool
+
+
+class NotionSyncRequest(BaseModel):
+    date: Optional[str] = None  # اگه ست بشه، فقط برنامه‌های همون تاریخ سینک می‌شن
+
+
+class NotionSyncOut(BaseModel):
+    created: int
+    updated: int
+    total_from_notion: int
+
+
+# ---------------------------------------------------------------------------
 # Bot-facing (uses BOT_API_KEY instead of JWT)
 # ---------------------------------------------------------------------------
 class BotLinkRequest(BaseModel):
