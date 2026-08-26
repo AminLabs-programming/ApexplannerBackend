@@ -8,11 +8,10 @@
     Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     و پلاگین PostgreSQL رو به این سرویس وصل کن (DATABASE_URL خودکار ست می‌شه).
     متغیرهای محیطی لازم: JWT_SECRET ، BOT_API_KEY (هر دو رشته‌ی تصادفی طولانی بساز).
-    برای اتصال به ناتیون: NOTION_API_KEY و NOTION_DATABASE_ID را نیز تنظیم کنید.
 """
 import json
 import uuid
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,14 +19,6 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas, auth
 from .database import get_db, init_db
-from .notion_integration import (
-    sync_plan_from_notion,
-    list_restore_points,
-    restore_from_point,
-    create_restore_point,
-    get_notion_integration_url,
-    get_notion_database_guide,
-)
 
 app = FastAPI(title="Apex Planner API", version="1.0.0")
 
@@ -568,161 +559,3 @@ def bot_group_report(group_id: int, date: str, _=Depends(verify_bot_key), db: Se
             completed_items=completed, total_items=len(items),
         ))
     return result
-
-
-# ---------------------------------------------------------------------------
-# Admin: Notion Integration & Restore Points
-# فقط برای کاربران ادمین — امکان همگام‌سازی با ناتیون و مدیریت restore pointها
-# ---------------------------------------------------------------------------
-@app.get("/admin/notion/guide")
-def admin_notion_guide(admin: models.User = Depends(get_current_admin)):
-    """راهنمای اتصال به ناتیون برای ادمین."""
-    return {
-        "integration_url": get_notion_integration_url(),
-        "database_guide": get_notion_database_guide(),
-        "required_env_vars": ["NOTION_API_KEY", "NOTION_DATABASE_ID"],
-    }
-
-
-@app.post("/admin/notion/sync", response_model=schemas.NotionSyncResponse)
-def admin_sync_from_notion(
-    payload: Optional[Dict[str, str]] = None,
-    admin: models.User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    همگام‌سازی برنامه‌ها از ناتیون به دیتابیس برای کاربر ادمین.
-    
-    این endpoint صفحات دیتابیس ناتیون را می‌خواند و به عنوان plan_items ذخیره می‌کند.
-    قبل از همگام‌سازی یک restore point خودکار ایجاد می‌شود.
-    
-    پارامتر اختیاری:
-    - date: فیلتر تاریخ (YYYY-MM-DD) برای همگام‌سازی فقط یک روز خاص
-    """
-    date_filter = payload.get("date") if payload else None
-    
-    try:
-        result = sync_plan_from_notion(db=db, user=admin, notion_date_filter=date_filter)
-        return schemas.NotionSyncResponse(**result)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/admin/restore-points", response_model=List[schemas.RestorePointOut])
-def admin_list_restore_points(
-    limit: int = 50,
-    admin: models.User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """دریافت لیست restore pointهای کاربر ادمین."""
-    return list_restore_points(db=db, user_id=admin.id, limit=limit)
-
-
-@app.get("/admin/restore-points/{rp_id}", response_model=schemas.RestorePointOut)
-def admin_get_restore_point(
-    rp_id: str,
-    admin: models.User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """دریافت جزئیات یک restore point خاص."""
-    try:
-        data = restore_from_point(db=db, restore_point_id=rp_id, user_id=admin.id)
-        return schemas.RestorePointOut(**data)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@app.post("/admin/restore-points", response_model=schemas.RestorePointOut)
-def admin_create_restore_point(
-    payload: schemas.RestorePointCreate,
-    admin: models.User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    ایجاد دستی یک restore point.
-    
-    کاربرد: قبل از انجام عملیات حساس از طریق اپ یا بات،
-    می‌توانید یک restore point دستی ایجاد کنید.
-    """
-    rp = create_restore_point(
-        db=db,
-        user_id=admin.id,
-        operation_type=payload.operation_type,
-        data_before=payload.data_before,
-        data_after=payload.data_after,
-        description=payload.description,
-    )
-    return schemas.RestorePointOut.model_validate(rp)
-
-
-@app.post("/admin/restore-points/{rp_id}/apply")
-def admin_apply_restore_point(
-    rp_id: str,
-    admin: models.User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    اعمال یک restore point برای بازیابی داده‌ها.
-    
-    توجه: این عملیات داده‌های فعلی را با داده‌های ذخیره شده در restore point جایگزین می‌کند.
-    قبل از اعمال، یک restore point جدید از وضعیت فعلی ایجاد می‌شود.
-    """
-    # دریافت اطلاعات restore point
-    try:
-        rp_data = restore_from_point(db=db, restore_point_id=rp_id, user_id=admin.id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
-    # ایجاد restore point از وضعیت فعلی قبل از بازیابی
-    existing_items = db.query(models.PlanItem).filter(
-        models.PlanItem.owner_id == admin.id
-    ).all()
-    create_restore_point(
-        db=db,
-        user_id=admin.id,
-        operation_type="pre_restore_backup",
-        data_before={
-            "items_count": len(existing_items),
-            "items": [
-                {"id": item.id, "name": item.name, "date": item.date, "status": item.status}
-                for item in existing_items[:50]
-            ]
-        },
-        description=f"پشتیبان قبل از بازیابی از {rp_id}",
-    )
-    
-    # بازیابی داده‌ها از restore point
-    data_before = rp_data.get("data_before", {})
-    if not data_before:
-        raise HTTPException(status_code=400, detail="داده‌ای برای بازیابی در این restore point وجود ندارد")
-    
-    # حذف تمام plan_items فعلی کاربر
-    db.query(models.PlanItem).filter(models.PlanItem.owner_id == admin.id).delete()
-    db.commit()
-    
-    # بازیابی داده‌های ذخیره شده
-    restored_count = 0
-    items_to_restore = data_before.get("items", [])
-    
-    for item_data in items_to_restore:
-        from .main import new_id
-        item = models.PlanItem(
-            id=item_data.get("id", new_id()),
-            owner_id=admin.id,
-            name=item_data.get("name", ""),
-            date=item_data.get("date", ""),
-            status=item_data.get("status", False),
-            category="درسی",
-            study_minutes=0,
-            test_count=0,
-        )
-        db.add(item)
-        restored_count += 1
-    
-    db.commit()
-    
-    return {
-        "success": True,
-        "restored_count": restored_count,
-        "message": f"{restored_count} آیتم با موفقیت بازیابی شد",
-    }

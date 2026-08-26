@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -193,34 +193,3 @@ class BotGroupReportMember(BaseModel):
     total_tests: int
     completed_items: int
     total_items: int
-
-
-# ---------------------------------------------------------------------------
-# Notion Integration & Restore Points
-# ---------------------------------------------------------------------------
-class RestorePointOut(BaseModel):
-    id: str
-    owner_id: int
-    operation_type: str
-    created_at: datetime
-    description: str
-    data_before: Optional[Dict[str, Any]] = None
-    data_after: Optional[Dict[str, Any]] = None
-
-    class Config:
-        from_attributes = True
-
-
-class NotionSyncResponse(BaseModel):
-    success: bool
-    created: int
-    updated: int
-    total_synced: int
-    items: List[Dict[str, Any]]
-
-
-class RestorePointCreate(BaseModel):
-    operation_type: str
-    description: str = ""
-    data_before: Optional[Dict[str, Any]] = None
-    data_after: Optional[Dict[str, Any]] = None
