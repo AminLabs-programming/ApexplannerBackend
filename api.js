@@ -102,6 +102,12 @@ const Api = (() => {
       request("POST", "/auth/login", { json: { username, password }, auth: false }),
     me: () => request("GET", "/auth/me"),
     updateMe: (payload) => request("PATCH", "/auth/me", { json: payload }),
+    changePassword: (currentPassword, newPassword) =>
+      request("PATCH", "/auth/change-password", { json: { current_password: currentPassword, new_password: newPassword } }),
+    forgotPassword: (username) =>
+      request("POST", "/auth/forgot-password", { json: { username }, auth: false }),
+    resetPassword: (username, code, newPassword) =>
+      request("POST", "/auth/reset-password", { json: { username, code, new_password: newPassword }, auth: false }),
 
     // ---- plan items ----
     listPlanItems: (params) => request("GET", "/plan-items", { params }),
@@ -131,6 +137,8 @@ const Api = (() => {
     adminListMembers: () => request("GET", "/admin/members"),
     adminSetBan: (userId, banned) => request("POST", `/admin/members/${userId}/ban`, { json: { banned } }),
     adminDeleteMember: (userId) => request("DELETE", `/admin/members/${userId}`),
+    adminResetPassword: (userId, newPassword) =>
+      request("POST", `/admin/members/${userId}/reset-password`, { json: { new_password: newPassword || null } }),
 
     // ---- admin: notion sync ----
     adminNotionStatus: () => request("GET", "/admin/notion/status"),
