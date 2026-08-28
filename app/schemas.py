@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
 
@@ -188,6 +188,93 @@ class AlarmOut(BaseModel):
     time: str
     days: List[int]
     enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------------------------------------------------------------------
+# Analysis bank (بانک تحلیل)
+# ---------------------------------------------------------------------------
+class AnalysisQuestionNoteCreate(BaseModel):
+    question_number: int = Field(ge=1, le=200)
+    subject: str = ""
+    note: str = ""
+    is_correct: Optional[bool] = None
+
+
+class AnalysisQuestionNoteOut(BaseModel):
+    id: str
+    exam_id: str
+    question_number: int
+    subject: str = ""
+    note: str = ""
+    is_correct: Optional[bool] = None
+    page: Optional[int] = None  # از question_page_map گرفته و اینجا برای راحتی فرانت اضافه می‌شه
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AnalysisExamCreateMeta(BaseModel):
+    """متادیتای آزمون؛ همراه فایل PDF به‌صورت multipart/form-data فرستاده می‌شه
+    (این اسکیما فقط برای مستندسازی/اعتبارسنجی مقادیر فرم است)."""
+    title: str = Field(min_length=1, max_length=255)
+    date: Optional[str] = ""
+    question_count: int = Field(ge=1, le=200)
+    # اگر تشخیص خودکار جواب نداد، این دو مقدار برای نگاشت خطی استفاده می‌شن
+    manual_start_page: Optional[int] = None
+    manual_end_page: Optional[int] = None
+    overall_note: Optional[str] = ""
+
+
+class AnalysisExamUpdate(BaseModel):
+    title: Optional[str] = None
+    date: Optional[str] = None
+    overall_note: Optional[str] = None
+
+
+class AnalysisRemapRequest(BaseModel):
+    """اصلاح دستی نگاشت شماره‌سوال -> صفحه بعد از آپلود (وقتی تشخیص خودکار
+    اشتباه بوده یا کاربر می‌خواد خودش دقیق‌تر تنظیم کنه)."""
+    manual_start_page: int = Field(ge=1)
+    manual_end_page: int = Field(ge=1)
+
+
+class AnalysisExamOut(BaseModel):
+    id: str
+    owner_id: int
+    title: str
+    date: str = ""
+    original_filename: str = ""
+    page_count: int
+    question_count: int
+    question_page_map: Dict[int, int]
+    mapping_method: str
+    manual_start_page: Optional[int] = None
+    manual_end_page: Optional[int] = None
+    overall_note: str = ""
+    created_at: datetime
+    notes: List[AnalysisQuestionNoteOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class AnalysisExamListOut(BaseModel):
+    """نسخه‌ی سبک برای لیست (بدون نگاشت کامل صفحات و بدون تک‌تک تحلیل‌ها)."""
+    id: str
+    owner_id: int
+    title: str
+    date: str = ""
+    page_count: int
+    question_count: int
+    mapping_method: str
+    overall_note: str = ""
+    notes_count: int = 0
+    created_at: datetime
 
     class Config:
         from_attributes = True

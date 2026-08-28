@@ -45,6 +45,7 @@ class User(Base):
     questions = relationship("Question", back_populates="owner", cascade="all, delete-orphan")
     exams = relationship("Exam", back_populates="owner", cascade="all, delete-orphan")
     alarms = relationship("Alarm", back_populates="owner", cascade="all, delete-orphan")
+    analysis_exams = relationship("AnalysisExam", back_populates="owner", cascade="all, delete-orphan")
 
 
 class PlanItem(Base):
@@ -105,6 +106,53 @@ class Alarm(Base):
     enabled = Column(Boolean, nullable=False, default=True)
 
     owner = relationship("User", back_populates="alarms")
+
+
+class AnalysisExam(Base):
+    """بانک تحلیل: یک آزمون آپلودشده (PDF کامل دفترچه) به همراه نگاشت
+    شماره‌سوال -> صفحه‌ی PDF، تا با زدن روی شماره‌ی سوال داخل تحلیل، اپ
+    مستقیم به همون صفحه از PDF بپره. نگاشت یا خودکار (با استخراج متن PDF و
+    پیدا کردن الگوی «سوال N») ساخته می‌شه، یا اگر خودکار جواب نداد، از دو
+    نقطه‌ی دستی (صفحه‌ی شروع سوال ۱ و صفحه‌ی سوال آخر) به‌صورت خطی
+    (proportional) تخمین زده می‌شه."""
+    __tablename__ = "analysis_exams"
+
+    id = Column(String(32), primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    date = Column(String(10), nullable=True, default="")  # YYYY-MM-DD میلادی، اختیاری
+    pdf_filename = Column(String(255), nullable=False)     # نام فایل ذخیره‌شده روی دیسک (uploads/analysis/)
+    original_filename = Column(String(255), nullable=True, default="")
+    page_count = Column(Integer, nullable=False, default=0)
+    question_count = Column(Integer, nullable=False, default=0)
+    # نگاشت شماره‌سوال -> صفحه (۱-بیس)، به‌صورت JSON: {"1": 3, "2": 3, "3": 4, ...}
+    question_page_map_json = Column(Text, nullable=False, default="{}")
+    mapping_method = Column(String(16), nullable=False, default="manual")  # 'auto' | 'manual' | 'mixed'
+    # نقاط دستی که proportional mapping ازشون ساخته شده (برای نمایش/ویرایش بعدی)
+    manual_start_page = Column(Integer, nullable=True)   # صفحه‌ی شروع سوال ۱
+    manual_end_page = Column(Integer, nullable=True)     # صفحه‌ی سوال آخر
+    overall_note = Column(Text, nullable=True, default="")  # تحلیل کلی آزمون
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="analysis_exams")
+    question_notes = relationship("AnalysisQuestionNote", back_populates="exam", cascade="all, delete-orphan")
+
+
+class AnalysisQuestionNote(Base):
+    """تحلیل نوشته‌شده برای یک سوال مشخص از یک آزمون در بانک تحلیل."""
+    __tablename__ = "analysis_question_notes"
+    __table_args__ = (UniqueConstraint("exam_id", "question_number", name="uq_analysis_note_exam_qnum"),)
+
+    id = Column(String(32), primary_key=True)
+    exam_id = Column(String(32), ForeignKey("analysis_exams.id"), nullable=False, index=True)
+    question_number = Column(Integer, nullable=False)
+    subject = Column(String(64), nullable=True, default="")
+    note = Column(Text, nullable=False, default="")
+    is_correct = Column(Boolean, nullable=True, default=None)  # وضعیت خودم توی این سوال (اختیاری)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    exam = relationship("AnalysisExam", back_populates="question_notes")
 
 
 class TemplateMetaCache(Base):

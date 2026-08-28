@@ -8,3 +8,4 @@ python-jose[cryptography]==3.3.0
 python-multipart==0.0.12
 pydantic-settings==2.5.2
 notion-client==2.2.1
+pdfplumber==0.11.9

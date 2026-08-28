@@ -10,18 +10,33 @@
     متغیرهای محیطی لازم: JWT_SECRET ، BOT_API_KEY (هر دو رشته‌ی تصادفی طولانی بساز).
 """
 import json
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from . import models, schemas, auth, notion_sync
+from . import models, schemas, auth, notion_sync, analysis_pdf
 from .database import get_db, init_db
 
 app = FastAPI(title="Apex Planner API", version="1.0.0")
+
+# ---------------------------------------------------------------------------
+# بانک تحلیل: پوشه‌ی ذخیره‌ی PDF آزمون‌ها روی دیسک سرور.
+# ⚠️ روی Railway، دیسک سرویس به‌طور پیش‌فرض ephemeral است؛ یعنی با هر
+# دیپلوی جدید یا ری‌استارت سرویس، فایل‌های این پوشه از بین می‌رن (چون
+# ایمیج کانتینر از نو ساخته می‌شه). برای این‌که فایل‌های آپلودشده همیشگی
+# بمونن، باید از Railway Volume استفاده کنی: Settings → Volumes → یک
+# Volume جدید بساز و Mount Path رو دقیقاً همون چیزی بذار که در متغیر
+# محیطی ANALYSIS_UPLOAD_DIR ست می‌کنی (پیش‌فرض زیر همون‌جا که کد اجرا
+# می‌شه). بدون Volume، فقط برای تست محلی/کوتاه‌مدت مناسبه.
+ANALYSIS_UPLOAD_DIR = os.environ.get("ANALYSIS_UPLOAD_DIR", os.path.join(os.getcwd(), "uploads", "analysis"))
+os.makedirs(ANALYSIS_UPLOAD_DIR, exist_ok=True)
+ANALYSIS_MAX_PDF_MB = 30
 
 # CORS: چون اپ (PWA) از یک دامنه‌ی دیگر (GitHub Pages) به این API درخواست می‌زند
 app.add_middleware(
@@ -458,6 +473,294 @@ def delete_alarm(a_id: str, user: models.User = Depends(get_current_user), db: S
     if not a:
         raise HTTPException(status_code=404, detail="آلارم یافت نشد")
     db.delete(a)
+    db.commit()
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# بانک تحلیل (Analysis Bank)
+# ---------------------------------------------------------------------------
+def _analysis_exam_path(pdf_filename: str) -> str:
+    return os.path.join(ANALYSIS_UPLOAD_DIR, pdf_filename)
+
+
+def _analysis_note_out(n: models.AnalysisQuestionNote, page_map: dict) -> schemas.AnalysisQuestionNoteOut:
+    return schemas.AnalysisQuestionNoteOut(
+        id=n.id, exam_id=n.exam_id, question_number=n.question_number,
+        subject=n.subject or "", note=n.note or "", is_correct=n.is_correct,
+        page=page_map.get(str(n.question_number)) or page_map.get(n.question_number),
+        created_at=n.created_at, updated_at=n.updated_at,
+    )
+
+
+def _analysis_exam_out(e: models.AnalysisExam, db: Session) -> schemas.AnalysisExamOut:
+    page_map_raw = json.loads(e.question_page_map_json or "{}")
+    page_map_int = {int(k): v for k, v in page_map_raw.items()}
+    notes = (
+        db.query(models.AnalysisQuestionNote)
+        .filter(models.AnalysisQuestionNote.exam_id == e.id)
+        .order_by(models.AnalysisQuestionNote.question_number.asc())
+        .all()
+    )
+    return schemas.AnalysisExamOut(
+        id=e.id, owner_id=e.owner_id, title=e.title, date=e.date or "",
+        original_filename=e.original_filename or "", page_count=e.page_count,
+        question_count=e.question_count, question_page_map=page_map_int,
+        mapping_method=e.mapping_method,
+        manual_start_page=e.manual_start_page, manual_end_page=e.manual_end_page,
+        overall_note=e.overall_note or "", created_at=e.created_at,
+        notes=[_analysis_note_out(n, page_map_raw) for n in notes],
+    )
+
+
+def _analysis_exam_list_out(e: models.AnalysisExam, notes_count: int) -> schemas.AnalysisExamListOut:
+    return schemas.AnalysisExamListOut(
+        id=e.id, owner_id=e.owner_id, title=e.title, date=e.date or "",
+        page_count=e.page_count, question_count=e.question_count,
+        mapping_method=e.mapping_method, overall_note=e.overall_note or "",
+        notes_count=notes_count, created_at=e.created_at,
+    )
+
+
+@app.get("/analysis-exams", response_model=List[schemas.AnalysisExamListOut])
+def list_analysis_exams(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    items = (
+        db.query(models.AnalysisExam)
+        .filter(models.AnalysisExam.owner_id == user.id)
+        .order_by(models.AnalysisExam.created_at.desc())
+        .all()
+    )
+    out = []
+    for e in items:
+        cnt = db.query(models.AnalysisQuestionNote).filter(models.AnalysisQuestionNote.exam_id == e.id).count()
+        out.append(_analysis_exam_list_out(e, cnt))
+    return out
+
+
+@app.get("/analysis-exams/{exam_id}", response_model=schemas.AnalysisExamOut)
+def get_analysis_exam(exam_id: str, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    return _analysis_exam_out(e, db)
+
+
+@app.post("/analysis-exams", response_model=schemas.AnalysisExamOut)
+async def create_analysis_exam(
+    title: str = Form(...),
+    date: str = Form(""),
+    question_count: int = Form(...),
+    manual_start_page: Optional[int] = Form(None),
+    manual_end_page: Optional[int] = Form(None),
+    overall_note: str = Form(""),
+    pdf: UploadFile = File(...),
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not (1 <= question_count <= 200):
+        raise HTTPException(status_code=400, detail="تعداد سوال باید بین ۱ تا ۲۰۰ باشد")
+    if pdf.content_type not in ("application/pdf", "application/octet-stream") and not (pdf.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="فقط فایل PDF مجاز است")
+
+    exam_id = new_id()
+    pdf_filename = f"{exam_id}.pdf"
+    dest_path = _analysis_exam_path(pdf_filename)
+
+    size = 0
+    max_bytes = ANALYSIS_MAX_PDF_MB * 1024 * 1024
+    try:
+        with open(dest_path, "wb") as out_f:
+            while True:
+                chunk = await pdf.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    out_f.close()
+                    os.remove(dest_path)
+                    raise HTTPException(status_code=400, detail=f"حجم فایل نباید بیشتر از {ANALYSIS_MAX_PDF_MB} مگابایت باشد")
+                out_f.write(chunk)
+    finally:
+        await pdf.close()
+
+    if size == 0:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise HTTPException(status_code=400, detail="فایل آپلودشده خالی است")
+
+    # ۱) اول تلاش برای تشخیص خودکار نگاشت شماره‌سوال -> صفحه از روی متن PDF
+    auto_map, page_count = analysis_pdf.detect_question_page_map(dest_path, expected_question_count=question_count)
+    mapping_method = "manual"
+    final_map = {}
+    used_start = manual_start_page
+    used_end = manual_end_page
+
+    if auto_map:
+        final_map = analysis_pdf.fill_gaps_in_map(auto_map, question_count)
+        mapping_method = "auto"
+    elif manual_start_page and manual_end_page:
+        final_map = analysis_pdf.build_linear_map(question_count, manual_start_page, manual_end_page)
+        mapping_method = "manual"
+    else:
+        # نه تشخیص خودکار جواب داد، نه نقطه‌ی دستی داده شده؛ فایل رو نگه
+        # می‌داریم ولی بدون نگاشت — کاربر بعداً می‌تونه با
+        # /analysis-exams/{id}/remap دستی تنظیمش کنه.
+        final_map = {}
+        mapping_method = "manual"
+
+    if page_count == 0:
+        page_count = analysis_pdf.get_page_count(dest_path)
+
+    e = models.AnalysisExam(
+        id=exam_id, owner_id=user.id, title=title, date=date or "",
+        pdf_filename=pdf_filename, original_filename=pdf.filename or "",
+        page_count=page_count, question_count=question_count,
+        question_page_map_json=json.dumps({str(k): v for k, v in final_map.items()}, ensure_ascii=False),
+        mapping_method=mapping_method,
+        manual_start_page=used_start, manual_end_page=used_end,
+        overall_note=overall_note or "",
+    )
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return _analysis_exam_out(e, db)
+
+
+@app.patch("/analysis-exams/{exam_id}", response_model=schemas.AnalysisExamOut)
+def update_analysis_exam(exam_id: str, payload: schemas.AnalysisExamUpdate, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    if payload.title is not None:
+        e.title = payload.title
+    if payload.date is not None:
+        e.date = payload.date
+    if payload.overall_note is not None:
+        e.overall_note = payload.overall_note
+    db.commit()
+    db.refresh(e)
+    return _analysis_exam_out(e, db)
+
+
+@app.post("/analysis-exams/{exam_id}/remap", response_model=schemas.AnalysisExamOut)
+def remap_analysis_exam(exam_id: str, payload: schemas.AnalysisRemapRequest, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """اصلاح دستی نگاشت صفحات — وقتی تشخیص خودکار غلط بوده یا کاربر می‌خواد
+    خودش دقیق‌تر (با دو نقطه‌ی جدید) نگاشت خطی رو بازسازی کنه."""
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    if payload.manual_end_page < payload.manual_start_page:
+        raise HTTPException(status_code=400, detail="صفحه‌ی پایان نمی‌تواند قبل از صفحه‌ی شروع باشد")
+    if e.page_count and payload.manual_end_page > e.page_count:
+        raise HTTPException(status_code=400, detail=f"این PDF فقط {e.page_count} صفحه دارد")
+
+    new_map = analysis_pdf.build_linear_map(e.question_count, payload.manual_start_page, payload.manual_end_page)
+    e.question_page_map_json = json.dumps({str(k): v for k, v in new_map.items()}, ensure_ascii=False)
+    e.mapping_method = "manual"
+    e.manual_start_page = payload.manual_start_page
+    e.manual_end_page = payload.manual_end_page
+    db.commit()
+    db.refresh(e)
+    return _analysis_exam_out(e, db)
+
+
+@app.delete("/analysis-exams/{exam_id}")
+def delete_analysis_exam(exam_id: str, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    pdf_path = _analysis_exam_path(e.pdf_filename)
+    db.delete(e)
+    db.commit()
+    if os.path.exists(pdf_path):
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
+    return {"deleted": True}
+
+
+@app.get("/analysis-exams/{exam_id}/pdf")
+def get_analysis_exam_pdf(exam_id: str, token: Optional[str] = None, db: Session = Depends(get_db)):
+    # <iframe>/<embed> و دکمه‌ی دانلود امکان فرستادن هدر Authorization رو
+    # ندارن، پس اینجا (فقط همین route) توکن رو به‌عنوان query param هم
+    # قبول می‌کنیم — نه فقط هدر Bearer معمول.
+    payload = auth.decode_access_token(token) if token else None
+    if not payload:
+        raise HTTPException(status_code=401, detail="توکن نامعتبر یا منقضی شده")
+    user = db.query(models.User).filter(models.User.id == int(payload["sub"])).first()
+    if not user or user.is_banned:
+        raise HTTPException(status_code=401, detail="دسترسی مجاز نیست")
+
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    pdf_path = _analysis_exam_path(e.pdf_filename)
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail="فایل PDF روی سرور پیدا نشد (احتمالاً بعد از دیپلوی پاک شده)")
+    filename = e.original_filename or f"{e.title}.pdf"
+    return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+
+
+@app.get("/analysis-exams/{exam_id}/notes", response_model=List[schemas.AnalysisQuestionNoteOut])
+def list_analysis_notes(exam_id: str, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    page_map = json.loads(e.question_page_map_json or "{}")
+    notes = (
+        db.query(models.AnalysisQuestionNote)
+        .filter(models.AnalysisQuestionNote.exam_id == exam_id)
+        .order_by(models.AnalysisQuestionNote.question_number.asc())
+        .all()
+    )
+    return [_analysis_note_out(n, page_map) for n in notes]
+
+
+@app.post("/analysis-exams/{exam_id}/notes", response_model=schemas.AnalysisQuestionNoteOut)
+def upsert_analysis_note(exam_id: str, payload: schemas.AnalysisQuestionNoteCreate, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """ساخت یا به‌روزرسانی تحلیل یک سوال مشخص. اگه از قبل برای همون شماره‌سوال
+    تحلیلی ثبت شده باشه، بازنویسی می‌شه (چون هر سوال فقط یک تحلیل داره)."""
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    if payload.question_number > e.question_count:
+        raise HTTPException(status_code=400, detail=f"این آزمون فقط {e.question_count} سوال دارد")
+
+    existing = (
+        db.query(models.AnalysisQuestionNote)
+        .filter(models.AnalysisQuestionNote.exam_id == exam_id, models.AnalysisQuestionNote.question_number == payload.question_number)
+        .first()
+    )
+    now = datetime.utcnow()
+    if existing:
+        existing.subject = payload.subject or ""
+        existing.note = payload.note or ""
+        existing.is_correct = payload.is_correct
+        existing.updated_at = now
+        n = existing
+    else:
+        n = models.AnalysisQuestionNote(
+            id=new_id(), exam_id=exam_id, question_number=payload.question_number,
+            subject=payload.subject or "", note=payload.note or "",
+            is_correct=payload.is_correct, created_at=now, updated_at=now,
+        )
+        db.add(n)
+    db.commit()
+    db.refresh(n)
+    page_map = json.loads(e.question_page_map_json or "{}")
+    return _analysis_note_out(n, page_map)
+
+
+@app.delete("/analysis-exams/{exam_id}/notes/{note_id}")
+def delete_analysis_note(exam_id: str, note_id: str, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    e = db.query(models.AnalysisExam).filter(models.AnalysisExam.id == exam_id, models.AnalysisExam.owner_id == user.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="آزمون یافت نشد")
+    n = db.query(models.AnalysisQuestionNote).filter(models.AnalysisQuestionNote.id == note_id, models.AnalysisQuestionNote.exam_id == exam_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="تحلیل یافت نشد")
+    db.delete(n)
     db.commit()
     return {"deleted": True}
 
