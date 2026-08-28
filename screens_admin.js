@@ -162,8 +162,13 @@ function renderAdminMembersListInto(listEl) {
           <div style="font-size:10.5px; color:var(--text-3);">تست ۷ روز اخیر</div>
         </div>
       </div>
-      ${m.role !== 'admin' ? `
       <div class="btn-row" style="margin-top:12px;">
+        <button class="btn-sm btn-ghost" style="flex:1;" onclick="confirmAdminResetPassword(${m.id}, '${escapeHtml(m.display_name)}', ${!!m.telegram_chat_id})">
+          <span class="material-symbols-rounded" style="font-size:16px; vertical-align:-3px;">password</span> ریست رمز
+        </button>
+      </div>
+      ${m.role !== 'admin' ? `
+      <div class="btn-row" style="margin-top:8px;">
         <button class="btn-sm ${m.is_banned ? 'btn-primary' : 'btn-danger-ghost'}" style="flex:1;" onclick="toggleMemberBan(${m.id}, ${!m.is_banned})">
           ${m.is_banned ? 'رفع مسدودیت' : 'مسدود کردن'}
         </button>
@@ -179,6 +184,38 @@ async function toggleMemberBan(userId, banned) {
     showToast(banned ? 'کاربر مسدود شد' : 'مسدودیت برداشته شد');
     await loadAdminMembers();
     renderAdminMembersList();
+  } catch (e) {
+    showToast('خطا: ' + e.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ریست دستی رمز عبور توسط ادمین — بیشتر برای کاربرهایی که به بات وصل نیستن
+// و نمی‌تونن از «فراموشی رمز» خودکار استفاده کنن، ولی برای هر عضوی قابل استفاده‌ست.
+// ---------------------------------------------------------------------------
+function confirmAdminResetPassword(userId, name, telegramLinked) {
+  openSheet(`
+    <h2>ریست رمز عبور</h2>
+    <p style="font-size:12.5px; color:var(--text-2); margin-top:-10px; margin-bottom:14px;">
+      برای «${escapeHtml(name)}»${telegramLinked ? ' — این کاربر به بات وصله و خودش هم می‌تونه از «فراموشی رمز» استفاده کنه.' : ' — این کاربر به بات وصل نیست، پس فقط از همین‌جا می‌شه رمزش رو عوض کرد.'}
+    </p>
+    <div class="field">
+      <label>رمز جدید (اختیاری)</label>
+      <input id="adminNewPass" type="text" placeholder="خالی بذار تا خودکار ساخته بشه" />
+    </div>
+    <button class="btn btn-primary" onclick="submitAdminResetPassword(${userId})">ریست کن</button>
+  `);
+}
+
+async function submitAdminResetPassword(userId) {
+  const val = document.getElementById('adminNewPass').value.trim();
+  try {
+    const res = await Api.adminResetPassword(userId, val || undefined);
+    openDialog({
+      icon: 'password', title: 'رمز جدید ساخته شد',
+      text: `رمز جدید: <code style="user-select:all; color:var(--primary-bright);">${escapeHtml(res.new_password)}</code><br/><br/>این رمز رو کپی کن و به کاربر بگو — بعد از اولین ورود بهتره خودش از «تغییر رمز عبور» توی پروفایلش عوضش کنه.`,
+      confirmText: 'باشه', cancelText: null,
+    });
   } catch (e) {
     showToast('خطا: ' + e.message, 'error');
   }
