@@ -201,6 +201,7 @@ class NotionSyncOut(BaseModel):
 # ---------------------------------------------------------------------------
 class BotLinkRequest(BaseModel):
     username: str
+    password: str          # رمز عبور حساب اپ — بدون این نمی‌توان به چت تلگرام وصل کرد
     telegram_chat_id: int
 
 
