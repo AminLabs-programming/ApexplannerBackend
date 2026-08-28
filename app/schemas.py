@@ -44,6 +44,42 @@ class UpdateProfileRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Password change / reset
+# ---------------------------------------------------------------------------
+class ChangePasswordRequest(BaseModel):
+    """کاربرِ لاگین‌کرده، رمز فعلی رو وارد می‌کنه و رمز جدید می‌سازه (سوتیِ رمز رو خودش عوض می‌کنه)."""
+    current_password: str
+    new_password: str = Field(min_length=4, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    """قدم اول بازیابی: فقط یوزرنیم. اگه حساب به بات وصل باشه، کد به تلگرام فرستاده می‌شه."""
+    username: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    telegram_linked: bool
+    message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """قدم دوم بازیابی: کدی که از بات گرفته + رمز جدید."""
+    username: str
+    code: str
+    new_password: str = Field(min_length=4, max_length=128)
+
+
+class AdminResetPasswordRequest(BaseModel):
+    """ادمین برای کاربری که به بات وصل نیست (یا هر کاربری) رمز رو دستی ریست می‌کنه.
+    اگه new_password خالی بمونه، یک رمز موقت تصادفی ساخته می‌شه و در پاسخ برگردونده می‌شه."""
+    new_password: Optional[str] = Field(default=None, min_length=4, max_length=128)
+
+
+class AdminResetPasswordResponse(BaseModel):
+    new_password: str
+
+
+# ---------------------------------------------------------------------------
 # Plan items
 # ---------------------------------------------------------------------------
 class PlanItemCreate(BaseModel):
@@ -203,6 +239,13 @@ class BotLinkRequest(BaseModel):
     username: str
     password: str          # رمز عبور حساب اپ — بدون این نمی‌توان به چت تلگرام وصل کرد
     telegram_chat_id: int
+
+
+class BotSendResetCodeRequest(BaseModel):
+    """بکند از بات می‌خواد کد بازیابی رو به یک chat_id مشخص بفرسته."""
+    telegram_chat_id: int
+    code: str
+    display_name: str
 
 
 class BotGroupReportMember(BaseModel):

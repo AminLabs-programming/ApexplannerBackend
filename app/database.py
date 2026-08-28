@@ -40,11 +40,22 @@ def _run_lightweight_migrations():
     (بدون نیاز به Alembic برای این تغییرات کوچیک)."""
     from sqlalchemy import text, inspect
     inspector = inspect(engine)
-    if "plan_items" not in inspector.get_table_names():
-        return
-    existing_cols = {c["name"] for c in inspector.get_columns("plan_items")}
-    if "notion_page_id" not in existing_cols:
+    table_names = inspector.get_table_names()
+
+    if "plan_items" in table_names:
+        existing_cols = {c["name"] for c in inspector.get_columns("plan_items")}
+        if "notion_page_id" not in existing_cols:
+            with engine.connect() as conn:
+                col_type = "VARCHAR(64)" if not DATABASE_URL.startswith("sqlite") else "TEXT"
+                conn.execute(text(f"ALTER TABLE plan_items ADD COLUMN notion_page_id {col_type}"))
+                conn.commit()
+
+    if "users" in table_names:
+        existing_user_cols = {c["name"] for c in inspector.get_columns("users")}
         with engine.connect() as conn:
-            col_type = "VARCHAR(64)" if not DATABASE_URL.startswith("sqlite") else "TEXT"
-            conn.execute(text(f"ALTER TABLE plan_items ADD COLUMN notion_page_id {col_type}"))
-            conn.commit()
+            if "password_reset_code" not in existing_user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN password_reset_code VARCHAR(6)"))
+                conn.commit()
+            if "password_reset_expires" not in existing_user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN password_reset_expires TIMESTAMP"))
+                conn.commit()

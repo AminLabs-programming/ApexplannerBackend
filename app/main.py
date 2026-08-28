@@ -11,6 +11,7 @@
 """
 import json
 import uuid
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header
@@ -141,6 +142,82 @@ def update_me(payload: schemas.UpdateProfileRequest, user: models.User = Depends
     db.commit()
     db.refresh(user)
     return user
+
+
+# ---------------------------------------------------------------------------
+# Password: change (logged-in) / forgot+reset via Telegram bot / admin reset
+# ---------------------------------------------------------------------------
+@app.patch("/auth/change-password")
+def change_password(payload: schemas.ChangePasswordRequest, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """کاربر لاگین‌شده، رمز فعلی رو تایید می‌کنه و رمز جدید می‌ذاره (سوتیِ رمز)."""
+    if not auth.verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="رمز فعلی اشتباه است")
+    user.password_hash = auth.hash_password(payload.new_password)
+    # کد بازیابی احتمالاً معلق رو هم باطل کن، چون رمز عوض شد
+    user.password_reset_code = None
+    user.password_reset_expires = None
+    db.commit()
+    return {"message": "رمز عبور با موفقیت تغییر کرد"}
+
+
+@app.post("/auth/forgot-password", response_model=schemas.ForgotPasswordResponse)
+def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """قدم اول بازیابی. اگه حساب به بات تلگرام وصل باشه (telegram_chat_id ست شده)،
+    یک کد ۶ رقمی به همون چت فرستاده می‌شه. اگه وصل نباشه، کاربر راهنمایی می‌شه که
+    از ادمین بخواد رمزش رو ریست کنه — SMS یا ایمیل در کار نیست."""
+    user = db.query(models.User).filter(models.User.username == payload.username).first()
+    # برای جلوگیری از فاش‌شدن اینکه یوزرنیم وجود داره یا نه، پیام یکسان برمی‌گردونیم
+    generic_not_linked_msg = (
+        "این حساب به بات تلگرام وصل نیست، پس نمی‌تونیم کد رو خودکار بفرستیم. "
+        "از ادمین بخواه از پنل مدیریت رمزت رو ریست کنه."
+    )
+    if not user:
+        return schemas.ForgotPasswordResponse(telegram_linked=False, message=generic_not_linked_msg)
+
+    if not user.telegram_chat_id:
+        return schemas.ForgotPasswordResponse(telegram_linked=False, message=generic_not_linked_msg)
+
+    code = auth.generate_reset_code()
+    user.password_reset_code = code
+    user.password_reset_expires = datetime.utcnow() + timedelta(minutes=auth.RESET_CODE_EXPIRE_MINUTES)
+    db.commit()
+
+    sent = auth.send_telegram_message(
+        user.telegram_chat_id,
+        f"🔐 کد بازیابی رمز عبور اپکس پلنر: {code}\n"
+        f"این کد تا {auth.RESET_CODE_EXPIRE_MINUTES} دقیقه معتبره. اگه خودت درخواست ندادی، این پیام رو نادیده بگیر.",
+    )
+    if not sent:
+        # توکن بات ست نشده یا ارسال به هر دلیلی شکست خورد
+        raise HTTPException(status_code=503, detail="ارسال کد به تلگرام ممکن نشد. بعداً دوباره امتحان کن یا از ادمین بخواه رمزت رو ریست کنه.")
+
+    return schemas.ForgotPasswordResponse(
+        telegram_linked=True,
+        message="کد ۶ رقمی به چت تلگرام بات برات فرستاده شد.",
+    )
+
+
+@app.post("/auth/reset-password", response_model=schemas.TokenResponse)
+def reset_password(payload: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
+    """قدم دوم بازیابی: کد + رمز جدید. اگه درست باشه، لاگین هم می‌کنیم (توکن برمی‌گردونیم)."""
+    user = db.query(models.User).filter(models.User.username == payload.username).first()
+    if not user or not user.password_reset_code or not user.password_reset_expires:
+        raise HTTPException(status_code=400, detail="کد نامعتبر است یا هنوز درخواست بازیابی نزدی")
+    if datetime.utcnow() > user.password_reset_expires:
+        user.password_reset_code = None
+        user.password_reset_expires = None
+        db.commit()
+        raise HTTPException(status_code=400, detail="کد منقضی شده، دوباره درخواست بده")
+    if payload.code.strip() != user.password_reset_code:
+        raise HTTPException(status_code=400, detail="کد وارد شده اشتباه است")
+
+    user.password_hash = auth.hash_password(payload.new_password)
+    user.password_reset_code = None
+    user.password_reset_expires = None
+    db.commit()
+    db.refresh(user)
+    token = auth.create_access_token(user.id, user.role)
+    return schemas.TokenResponse(access_token=token, user=schemas.UserOut.model_validate(user))
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +517,28 @@ def admin_delete_member(user_id: int, admin: models.User = Depends(get_current_a
     db.delete(u)
     db.commit()
     return {"deleted": True}
+
+
+@app.post("/admin/members/{user_id}/reset-password", response_model=schemas.AdminResetPasswordResponse)
+def admin_reset_password(
+    user_id: int,
+    payload: schemas.AdminResetPasswordRequest,
+    admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """برای کاربرهایی که به بات وصل نیستن (یا هر کاربری)، ادمین دستی رمز رو ریست
+    می‌کنه. اگه رمز جدید داده نشه، یک رمز موقت تصادفی ساخته می‌شه — ادمین باید
+    این رمز رو خودش (مثلاً توی گروه یا پیوی) به کاربر بگه."""
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="کاربر یافت نشد")
+
+    new_password = payload.new_password or auth.generate_temp_password()
+    u.password_hash = auth.hash_password(new_password)
+    u.password_reset_code = None
+    u.password_reset_expires = None
+    db.commit()
+    return schemas.AdminResetPasswordResponse(new_password=new_password)
 
 
 # ---------------------------------------------------------------------------

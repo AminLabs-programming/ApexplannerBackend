@@ -5,7 +5,11 @@ passlib 1.7.4 با نسخه‌های جدید bcrypt ناسازگاره) و تو
 لاگین نمی‌کند) بتواند مستقیماً و امن به API وصل شود.
 """
 import os
+import random
+import secrets
+import string
 import bcrypt
+import requests
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 
@@ -50,3 +54,40 @@ def decode_access_token(token: str):
         return payload
     except JWTError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# بازیابی رمز عبور از طریق بات تلگرام
+# ---------------------------------------------------------------------------
+# همون توکن بات تلگرام (bot.py) — روی Railway برای این سرویس (بکند) هم باید
+# ست بشه تا بکند بتونه مستقیماً به Telegram Bot API پیام بفرسته. لازم نیست
+# خود سرویس بات درگیر بشه؛ بکند مستقل کد رو می‌فرسته.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+RESET_CODE_EXPIRE_MINUTES = 10
+
+
+def generate_reset_code() -> str:
+    return "".join(random.choices(string.digits, k=6))
+
+
+def generate_temp_password(length: int = 10) -> str:
+    """رمز موقت تصادفی و خوانا برای ریست دستی توسط ادمین."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def send_telegram_message(chat_id: int, text: str) -> bool:
+    """پیام مستقیم از طریق Telegram Bot API (نه از طریق سرویس بات).
+    اگه TELEGRAM_BOT_TOKEN ست نشده باشه یا درخواست شکست بخوره، False برمی‌گردونه
+    و صدا زننده باید خطای مناسب به کاربر نشون بده."""
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+        return r.ok
+    except requests.RequestException:
+        return False

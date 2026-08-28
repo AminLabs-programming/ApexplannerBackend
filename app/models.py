@@ -32,6 +32,15 @@ class User(Base):
     exam_target_label = Column(String(255), nullable=True, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    # --- بازیابی رمز عبور از طریق بات تلگرام (به‌جای پیامک، چون رایگانه و
+    # چون کاربرهایی که با /link به بات وصل شدن، از قبل امکان دریافت پیام از
+    # بات رو دارن). فقط برای کاربرهای وصل‌شده (telegram_chat_id ست‌شده) کار
+    # می‌کنه؛ برای بقیه، ادمین باید از پنل ادمین رمزشون رو دستی ریست کنه. ---
+    # کد ۶ رقمی که موقع درخواست بازیابی ساخته و به چت تلگرام کاربر فرستاده می‌شه.
+    # با استفاده یا منقضی‌شدن، مقدارش پاک می‌شه (یک‌بارمصرفه).
+    password_reset_code = Column(String(6), nullable=True, default=None)
+    password_reset_expires = Column(DateTime, nullable=True, default=None)
+
     plan_items = relationship("PlanItem", back_populates="owner", cascade="all, delete-orphan")
     questions = relationship("Question", back_populates="owner", cascade="all, delete-orphan")
     exams = relationship("Exam", back_populates="owner", cascade="all, delete-orphan")
