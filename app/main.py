@@ -522,11 +522,24 @@ def admin_notion_sync(
 # ---------------------------------------------------------------------------
 @app.post("/bot/link-account", response_model=schemas.UserOut)
 def bot_link_account(payload: schemas.BotLinkRequest, _=Depends(verify_bot_key), db: Session = Depends(get_db)):
-    """وقتی کاربر توی بات دستور /link username را می‌زند، بات این اندپوینت را
-    صدا می‌زند تا chat_id تلگرام را به حساب اپ او وصل کند."""
+    """وقتی کاربر توی بات دستور /link username password را می‌زند، بات این اندپوینت را
+    صدا می‌زند تا chat_id تلگرام را به حساب اپ او وصل کند.
+    بدون تأیید رمز عبور، هیچ‌کس نمی‌تواند حساب دیگری را به چت خود متصل کند."""
     user = db.query(models.User).filter(models.User.username == payload.username).first()
     if not user:
         raise HTTPException(status_code=404, detail="کاربری با این نام کاربری در اپ ثبت‌نام نکرده")
+    if not auth.verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="رمز عبور اشتباه است")
+    if user.is_banned:
+        raise HTTPException(status_code=403, detail="این حساب مسدود شده است")
+    # اگه این chat_id قبلاً به حساب دیگری وصل بود، اول جدا می‌کنیم
+    existing = db.query(models.User).filter(
+        models.User.telegram_chat_id == payload.telegram_chat_id,
+        models.User.id != user.id
+    ).first()
+    if existing:
+        existing.telegram_chat_id = None
+        db.flush()
     user.telegram_chat_id = payload.telegram_chat_id
     db.commit()
     db.refresh(user)
