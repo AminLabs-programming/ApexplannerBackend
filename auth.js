@@ -67,7 +67,12 @@ function renderAuthForm(errorMsg) {
           ${isLogin ? 'ورود' : 'ساخت حساب'}
         </button>
 
-        ${isLogin ? `<p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:14px;">هنوز حساب نساختی؟ از تب «ثبت‌نام» بالا شروع کن.</p>` : `<p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:14px;">بعد از ساخت حساب، توی بات تلگرام هم بزن: <br/><code style="color:var(--primary-bright);">/link ${''}</code> + نام‌کاربریت</p>`}
+        ${isLogin ? `
+        <p style="text-align:center; font-size:11.5px; margin-top:14px;">
+          <a href="javascript:void(0)" onclick="openForgotPasswordSheet()" style="color:var(--primary-bright); text-decoration:none;">رمز عبورت رو فراموش کردی؟</a>
+        </p>
+        <p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:8px;">هنوز حساب نساختی؟ از تب «ثبت‌نام» بالا شروع کن.</p>
+        ` : `<p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:14px;">بعد از ساخت حساب، توی بات تلگرام هم بزن: <br/><code style="color:var(--primary-bright);">/link ${''}</code> + نام‌کاربریت</p>`}
       </div>
     </div>
   `;
@@ -104,6 +109,105 @@ async function submitAuthForm() {
     await bootAfterLogin();
   } catch (e) {
     renderAuthForm(e.message || 'خطایی پیش اومد');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// فراموشی رمز عبور — دو قدم: (۱) یوزرنیم → کد به تلگرام فرستاده می‌شه
+// (۲) کد + رمز جدید. اگه حساب به بات وصل نباشه، به کاربر می‌گیم از ادمین
+// بخواد. همه‌چیز همین‌جا توی خودِ authOverlay رندر می‌شه (نه sheet.js) چون
+// z-index شیت پایین‌تر از authOverlay هست و قبل از لاگین دیده نمی‌شه.
+// ---------------------------------------------------------------------------
+let _forgotUsername = '';
+
+function openForgotPasswordSheet() {
+  const el = document.getElementById('authOverlay');
+  el.innerHTML = `
+    <div style="width:100%; max-width:380px;">
+      <div style="text-align:center; margin-bottom:28px;">
+        <div style="font-weight:800; font-size:20px; color:var(--text-1);">بازیابی رمز عبور</div>
+        <div style="font-size:12.5px; color:var(--text-2); margin-top:4px;">کد بازیابی از طریق بات تلگرام فرستاده می‌شه</div>
+      </div>
+      <div class="card glass" style="padding:22px 20px;">
+        <div id="forgotErr" style="display:none; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); color:var(--danger); font-size:12.5px; padding:10px 12px; border-radius:10px; margin-bottom:14px;"></div>
+        <div class="field"><label>نام کاربری</label><input id="forgotUsername" type="text" autocapitalize="off" autocorrect="off" placeholder="همون یوزرنیمی که باهاش ثبت‌نام کردی" /></div>
+        <button class="btn btn-primary" id="forgotSubmitBtn" onclick="submitForgotUsername()">ارسال کد</button>
+        <p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:14px;">
+          <a href="javascript:void(0)" onclick="authMode='login'; renderAuthForm();" style="color:var(--primary-bright); text-decoration:none;">بازگشت به ورود</a>
+        </p>
+      </div>
+    </div>
+  `;
+  const inp = document.getElementById('forgotUsername');
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitForgotUsername(); });
+  inp.focus();
+}
+
+async function submitForgotUsername() {
+  const username = document.getElementById('forgotUsername').value.trim();
+  const errBox = document.getElementById('forgotErr');
+  const showErr = (msg) => { errBox.textContent = msg; errBox.style.display = 'block'; };
+  if (!username) { showErr('نام کاربری رو وارد کن'); return; }
+
+  const btn = document.getElementById('forgotSubmitBtn');
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const res = await Api.forgotPassword(username);
+    if (!res.telegram_linked) {
+      showErr(res.message);
+      btn.disabled = false; btn.textContent = 'ارسال کد';
+      return;
+    }
+    _forgotUsername = username;
+    openResetPasswordStep(res.message);
+  } catch (e) {
+    showErr(e.message || 'خطایی پیش اومد');
+    btn.disabled = false; btn.textContent = 'ارسال کد';
+  }
+}
+
+function openResetPasswordStep(infoMsg) {
+  const el = document.getElementById('authOverlay');
+  el.innerHTML = `
+    <div style="width:100%; max-width:380px;">
+      <div style="text-align:center; margin-bottom:28px;">
+        <div style="font-weight:800; font-size:20px; color:var(--text-1);">کد رو وارد کن</div>
+        <div style="font-size:12.5px; color:var(--text-2); margin-top:4px;">${escapeHtml(infoMsg || 'کد ۶ رقمی به تلگرام فرستاده شد')}</div>
+      </div>
+      <div class="card glass" style="padding:22px 20px;">
+        <div id="resetErr" style="display:none; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); color:var(--danger); font-size:12.5px; padding:10px 12px; border-radius:10px; margin-bottom:14px;"></div>
+        <div class="field"><label>کد ۶ رقمی</label><input id="resetCode" type="text" inputmode="numeric" maxlength="6" placeholder="مثلاً ۱۲۳۴۵۶" /></div>
+        <div class="field"><label>رمز جدید</label><input id="resetNewPass" type="password" placeholder="حداقل ۴ کاراکتر" /></div>
+        <button class="btn btn-primary" id="resetSubmitBtn" onclick="submitResetPassword()">تغییر رمز و ورود</button>
+        <p style="text-align:center; font-size:11.5px; color:var(--text-3); margin-top:14px;">
+          کد نیومد؟ <a href="javascript:void(0)" onclick="openForgotPasswordSheet()" style="color:var(--primary-bright); text-decoration:none;">دوباره امتحان کن</a>
+        </p>
+      </div>
+    </div>
+  `;
+  document.getElementById('resetCode').focus();
+}
+
+async function submitResetPassword() {
+  const code = document.getElementById('resetCode').value.trim();
+  const newPass = document.getElementById('resetNewPass').value;
+  const errBox = document.getElementById('resetErr');
+  const showErr = (msg) => { errBox.textContent = msg; errBox.style.display = 'block'; };
+
+  if (!code || code.length !== 6) { showErr('کد ۶ رقمی رو کامل وارد کن'); return; }
+  if (!newPass || newPass.length < 4) { showErr('رمز جدید باید حداقل ۴ کاراکتر باشه'); return; }
+
+  const btn = document.getElementById('resetSubmitBtn');
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const result = await Api.resetPassword(_forgotUsername, code, newPass);
+    Api.setToken(result.access_token);
+    Api.setCachedUser(result.user);
+    showToast('رمز عبور تغییر کرد ✅');
+    await bootAfterLogin();
+  } catch (e) {
+    showErr(e.message || 'خطایی پیش اومد');
+    btn.disabled = false; btn.textContent = 'تغییر رمز و ورود';
   }
 }
 
