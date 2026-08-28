@@ -681,7 +681,7 @@ def delete_analysis_exam(exam_id: str, user: models.User = Depends(get_current_u
 
 
 @app.get("/analysis-exams/{exam_id}/pdf")
-def get_analysis_exam_pdf(exam_id: str, token: Optional[str] = None, db: Session = Depends(get_db)):
+def get_analysis_exam_pdf(exam_id: str, token: Optional[str] = None, download: Optional[int] = None, db: Session = Depends(get_db)):
     # <iframe>/<embed> و دکمه‌ی دانلود امکان فرستادن هدر Authorization رو
     # ندارن، پس اینجا (فقط همین route) توکن رو به‌عنوان query param هم
     # قبول می‌کنیم — نه فقط هدر Bearer معمول.
@@ -699,7 +699,22 @@ def get_analysis_exam_pdf(exam_id: str, token: Optional[str] = None, db: Session
     if not os.path.exists(pdf_path):
         raise HTTPException(status_code=404, detail="فایل PDF روی سرور پیدا نشد (احتمالاً بعد از دیپلوی پاک شده)")
     filename = e.original_filename or f"{e.title}.pdf"
-    return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+
+    # -----------------------------------------------------------------------
+    # نکته‌ی مهم: FileResponse با پارامتر filename به‌صورت خودکار هدر
+    # Content-Disposition: attachment می‌فرسته. این باعث می‌شه مرورگر به‌جای
+    # نمایش PDF داخل <iframe> (preview)، همیشه بخواد فایل رو دانلود کنه —
+    # که دقیقاً همون چیزیه که باعث «صفحه‌ی سفید» و «دانلود مجدد کل PDF»
+    # موقع کلیک روی پرش به سوال می‌شد.
+    # پیش‌فرض این route حالا inline (برای iframe/viewer) هست؛ فقط وقتی
+    # صریحاً download=1 پاس داده بشه (دکمه‌ی «دانلود PDF»)، attachment
+    # می‌فرستیم.
+    # -----------------------------------------------------------------------
+    disposition_type = "attachment" if download else "inline"
+    response = FileResponse(pdf_path, media_type="application/pdf")
+    safe_filename = filename.replace('"', "")
+    response.headers["Content-Disposition"] = f'{disposition_type}; filename="{safe_filename}"'
+    return response
 
 
 @app.get("/analysis-exams/{exam_id}/notes", response_model=List[schemas.AnalysisQuestionNoteOut])
