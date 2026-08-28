@@ -92,12 +92,20 @@ def register_user(chat_id: int, name: str):
     )
 
 
-def link_account(chat_id: int, username: str) -> dict:
-    """معادل جدید register_user: chat_id تلگرام را به یک حساب از قبل
-    ثبت‌شده در اپ وصل می‌کند. دستور /link در bot.py این را صدا می‌زند."""
-    r = _post("/bot/link-account", json={"username": username, "telegram_chat_id": chat_id})
+def link_account(chat_id: int, username: str, password: str) -> dict:
+    """chat_id تلگرام را به یک حساب از قبل ثبت‌شده در اپ وصل می‌کند.
+    بدون تأیید رمز عبور انجام نمی‌شود — امنیت مهمه."""
+    r = _post("/bot/link-account", json={
+        "username": username,
+        "password": password,
+        "telegram_chat_id": chat_id,
+    })
     if r.status_code == 404:
         raise ValueError("کاربری با این نام کاربری توی اپ ثبت‌نام نکرده. اول توی اپ حساب بساز.")
+    if r.status_code == 401:
+        raise ValueError("رمز عبور اشتباهه. دوباره چک کن.")
+    if r.status_code == 403:
+        raise ValueError("این حساب مسدود شده. با ادمین تماس بگیر.")
     r.raise_for_status()
     return r.json()
 
