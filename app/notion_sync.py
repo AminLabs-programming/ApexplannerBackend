@@ -1,13 +1,16 @@
 """
-همگام‌سازی برنامه از Notion به دیتابیس اپکس پلنر (برای ادمین).
+همگام‌سازی دوطرفهٔ برنامه بین اپکس پلنر و Notion (فقط برای کاربر ادمین).
 
 منطق خوندن/نوشتن property ها عیناً از bot.py (کانکور بات) پورت شده تا با
 همون دیتابیس Notion که بات ادمین ازش استفاده می‌کنه سازگار باشه:
   Name (title), Date (date), Category (select), Status (checkbox),
   StudyMinutes (number), TestCount (number), Time (rich_text - اختیاری)
 
-این ماژول فقط "خوندن از Notion و درج/آپدیت توی دیتابیس محلی" رو انجام می‌ده؛
-نوشتن به Notion (مثل بات) اینجا لازم نیست چون جهت داده از Notion -> اپه.
+این ماژول هر دو جهت رو پوشش می‌ده:
+  - خوندن از Notion و درج/آپدیت توی دیتابیس محلی (fetch_plan_items)
+  - ساخت/آپدیت/حذف در Notion وقتی ادمین از خودِ اپ یک آیتم رو
+    می‌سازه/ویرایش می‌کنه/حذف می‌کنه (create_plan_item_page,
+    push_plan_item, delete_plan_item_page)
 """
 import os
 from typing import Optional
@@ -77,20 +80,66 @@ def page_to_plan_dict(page: dict) -> dict:
     }
 
 
+def _plan_item_properties(item) -> dict:
+    """دیکشنری property های Notion از روی یک شیء PlanItem می‌سازه — برای
+    استفاده‌ی مشترک در ساخت (create) و آپدیت (update) صفحه."""
+    props = {
+        "Name": {"title": [{"text": {"content": item.name or "بدون‌نام"}}]},
+        "Category": {"select": {"name": item.category or "درسی"}},
+        "Status": {"checkbox": bool(item.status)},
+        "StudyMinutes": {"number": item.study_minutes or 0},
+        "TestCount": {"number": item.test_count or 0},
+    }
+    if item.date:
+        props["Date"] = {"date": {"start": item.date}}
+    # فیلد Time توی دیتابیس Notion اختیاریه (ممکنه بعضی دیتابیس‌ها نداشته
+    # باشنش)؛ همیشه می‌فرستیمش، اگه property وجود نداشته باشه Notion خودش
+    # با خطای واضح جواب می‌ده که در push_plan_item/create_plan_item_page
+    # گرفته و لاگ می‌شه، نه اینکه کل درخواست کاربر رو بشکنه.
+    props["Time"] = {"rich_text": [{"text": {"content": item.time_label or ""}}]}
+    return props
+
+
+def create_plan_item_page(item) -> Optional[str]:
+    """یک صفحه‌ی جدید توی دیتابیس Notion برای این PlanItem می‌سازه و
+    notion_page_id ساخته‌شده رو برمی‌گردونه (یا None اگه Notion کانفیگ
+    نشده باشه). صدازننده مسئوله این مقدار رو روی item.notion_page_id
+    ذخیره و commit کنه."""
+    if not is_configured():
+        return None
+    client = _get_client()
+    page = client.pages.create(
+        parent={"database_id": NOTION_DATABASE_ID},
+        properties=_plan_item_properties(item),
+    )
+    return page["id"]
+
+
 def push_plan_item(item) -> bool:
-    """آپدیت وضعیت یک plan_item در Notion (جهت اپ -> Notion).
-    فقط وقتی آیتم notion_page_id داشته باشه (یعنی از Notion سینک شده) کار می‌کنه."""
+    """همه‌ی فیلدهای مرتبط یک PlanItem رو در Notion آپدیت می‌کنه (جهت
+    اپ -> Notion). فقط وقتی آیتم notion_page_id داشته باشه کار می‌کنه؛
+    یعنی صفحه‌ی متناظرش قبلاً (با create_plan_item_page یا سینک از
+    Notion) ساخته شده."""
     if not is_configured() or not item.notion_page_id:
         return False
     client = _get_client()
     client.pages.update(
         page_id=item.notion_page_id,
-        properties={
-            "Status": {"checkbox": bool(item.status)},
-            "StudyMinutes": {"number": item.study_minutes or 0},
-            "TestCount": {"number": item.test_count or 0},
-        },
+        properties=_plan_item_properties(item),
     )
+    return True
+
+
+def delete_plan_item_page(notion_page_id: str) -> bool:
+    """صفحه‌ی متناظر رو در Notion حذف می‌کنه. Notion API صفحات رو واقعاً
+    برای همیشه پاک نمی‌کنه بلکه به سطل زباله (Trash) می‌فرسته — که از دید
+    کاربر و از دید دیتابیس اصلی (query های بعدی) دقیقاً معادل «حذف‌شده»ست
+    و از "Trash" هم قابل بازیابیه، دقیقاً مثل حذف یک صفحه از تو خودِ
+    Notion. برای بازگردوندنش هم کاربر باید از داخل Notion اقدام کنه."""
+    if not is_configured() or not notion_page_id:
+        return False
+    client = _get_client()
+    client.pages.update(page_id=notion_page_id, archived=True)
     return True
 
 

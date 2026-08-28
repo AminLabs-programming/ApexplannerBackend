@@ -14,6 +14,15 @@ SCREENS.admin = function (root) {
     root.innerHTML = emptyState('lock', 'دسترسی نداری', 'این بخش فقط برای ادمین گروهه');
     return;
   }
+  if (!navigator.onLine) {
+    root.innerHTML = `
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+        <button class="icon-btn" onclick="go('profile')"><span class="material-symbols-rounded">arrow_forward</span></button>
+        <h1 class="page-title" style="margin:0;">پنل ادمین</h1>
+      </div>
+      ` + emptyState('cloud_off', 'نیاز به اینترنت', 'مدیریت اعضا و همگام‌سازی Notion فقط وقتی آنلاینی در دسترسه. بقیه‌ی بخش‌های اپ (برنامه، سوالات، تایمر و...) همچنان آفلاین کار می‌کنن.');
+    return;
+  }
 
   root.innerHTML = `
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">

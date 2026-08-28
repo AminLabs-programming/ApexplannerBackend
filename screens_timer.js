@@ -189,6 +189,9 @@ function finishTimerSession(auto) {
   TimerState.running = false;
   if (minutes >= 1) {
     DB.sessions.push({ id: uid(), date: Jalali.todayStr(), subject: TimerState.subject || 'مطالعه آزاد', minutes, mode: TimerState.mode });
+    // sessions فقط محلی‌ان (به سرور نمی‌رن)، پس همیشه باید توی کش هم
+    // ذخیره بشن وگرنه با بستن اپ گم می‌شن.
+    persistDbSoon();
     if (!auto) showToast(`${formatMinutes(minutes)} ثبت شد`);
   }
   TimerState.remainingSeconds = TimerState.mode === 'stopwatch' ? 0 : TimerState.totalSeconds;

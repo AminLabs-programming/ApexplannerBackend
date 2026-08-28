@@ -37,6 +37,10 @@ const Api = (() => {
       super(message);
       this.status = status;
     }
+    // status===0 یعنی اصلاً به سرور نرسیدیم (آفلاین / DNS / تایم‌اوت و...)؛
+    // این با خطاهای واقعی سرور (۴xx/۵xx) فرق داره و باید به‌جای نمایش خطا
+    // به کاربر، باعث صف‌شدنِ عملیات توی outbox بشه.
+    get isNetworkError() { return this.status === 0; }
   }
 
   async function request(method, path, { json, params, auth = true } = {}) {
@@ -81,6 +85,15 @@ const Api = (() => {
     ApiError,
     getToken, setToken, clearToken, getCachedUser, setCachedUser,
     isLoggedIn: () => !!getToken(),
+
+    // ---- connectivity ----
+    // یه درخواست سبک برای چک واقعی «آیا سرور جواب می‌ده؟». برخلاف
+    // navigator.onLine (که فقط یعنی کارت شبکه روشنه، نه اینکه واقعاً
+    // اینترنت/سرور در دسترسه)، این یکی واقعاً به بکند سر می‌زنه.
+    ping: () => request("GET", "/auth/me").then(() => true).catch((e) => {
+      if (e instanceof ApiError && !e.isNetworkError) return true; // سرور جواب داد (حتی خطا) یعنی آنلاینیم
+      return false;
+    }),
 
     // ---- auth ----
     register: (username, password, display_name) =>

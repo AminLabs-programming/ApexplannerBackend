@@ -107,17 +107,42 @@ async function submitAuthForm() {
   }
 }
 
-function logout() {
+async function logout() {
+  const uid_ = currentUserId();
+  const pending = uid_ ? await Store.countPending(uid_) : 0;
+
+  // اگه هنوز تغییراتی داریم که به سرور نرسیده (آفلاین بودیم)، هیچ‌وقت
+  // اجازه نمی‌دیم خروج باعث گم‌شدنشون بشه. یا باید صبر کنیم آنلاین بشه و
+  // خودکار سینک بشه، یا با تایید صریح کاربر (که می‌دونه چیکار می‌کنه)
+  // ادامه بدیم — ولی حتی در اون حالت هم outbox رو پاک نمی‌کنیم، فقط از
+  // اکانت خارج می‌شیم؛ با ورود مجدد همون کاربر، همون صف باز پردازش می‌شه.
+  if (pending > 0 && !navigator.onLine) {
+    openDialog({
+      icon: 'cloud_off', title: 'تغییرات سینک‌نشده داری',
+      text: `${fa(pending)} تغییر هنوز آفلاینه و به سرور نرسیده. اگه الان خارج بشی، این تغییرات پاک نمی‌شن و با ورود بعدیِ همین حساب، خودکار ارسال می‌شن — ولی تا اون‌موقع روی این دستگاه توی حساب دیگه‌ای دیده نمی‌شن.`,
+      confirmText: 'باز هم خارج شو', confirmClass: 'btn-danger-ghost', cancelText: 'صبر می‌کنم آنلاین بشه',
+      onConfirm: () => { closeDialog(); doLogout(); }
+    });
+    return;
+  }
+
   openDialog({
     icon: 'logout', title: 'خروج از حساب',
-    text: 'مطمئنی می‌خوای خارج بشی؟',
+    text: pending > 0
+      ? `${fa(pending)} تغییر در حال ارسال به سرور هست؛ چند لحظه صبر کن تموم بشه یا الان خارج شو (تغییرات با ورود بعدی همین حساب سینک می‌شن).`
+      : 'مطمئنی می‌خوای خارج بشی؟',
     confirmText: 'خروج', confirmClass: 'btn-danger-ghost',
-    onConfirm: () => {
-      Api.clearToken();
-      DB = null;
-      closeDialog();
-      authMode = 'login';
-      showAuthScreen();
-    }
+    onConfirm: () => { closeDialog(); doLogout(); }
   });
+}
+
+function doLogout() {
+  // فقط توکن پاک می‌شه؛ کش محلی (db_cache) و صفِ‌ارسال‌نشده (outbox) عمداً
+  // دست‌نخورده می‌مونن تا اگه همین کاربر دوباره وارد بشه (حتی آفلاین)،
+  // چیزی گم نشده باشه. این کش‌ها فقط با «پاک‌کردن همه‌داده‌ها»ی صریح از
+  // پروفایل، یا وقتی processOutbox موفق به سینک‌کامل بشه، جابه‌جا می‌شن.
+  Api.clearToken();
+  DB = null;
+  authMode = 'login';
+  showAuthScreen();
 }

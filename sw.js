@@ -1,7 +1,8 @@
-const CACHE_NAME = 'apex-planner-v2';
+const CACHE_NAME = 'apex-planner-v3';
 const ASSETS = [
   './index.html',
   './config.js',
+  './store.js',
   './api.js',
   './app.js',
   './auth.js',

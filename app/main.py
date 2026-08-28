@@ -177,6 +177,19 @@ def create_plan_item(payload: schemas.PlanItemCreate, user: models.User = Depend
     db.add(item)
     db.commit()
     db.refresh(item)
+    # طبق تصمیم محصول: فقط برنامه‌ی خودِ ادمین با Notion سینک می‌شه (چون
+    # دیتابیس Notion مشترکه و مخصوص گزارش/پیگیریِ ادمینه، نه هر عضو گروه).
+    # اگه Notion کانفیگ شده، همین‌جا یک صفحه‌ی متناظر هم توی Notion ساخته
+    # می‌شه تا از همون لحظه‌ی ساخت، دو طرف سینک باشن.
+    if user.role == "admin" and notion_sync.is_configured():
+        try:
+            page_id = notion_sync.create_plan_item_page(item)
+            if page_id:
+                item.notion_page_id = page_id
+                db.commit()
+                db.refresh(item)
+        except Exception as e:
+            print(f"[notion create failed] item={item.id} err={e}")  # توی Railway logs دیده می‌شه
     return _plan_item_out(item)
 
 
@@ -204,8 +217,15 @@ def delete_plan_item(item_id: str, user: models.User = Depends(get_current_user)
     item = db.query(models.PlanItem).filter(models.PlanItem.id == item_id, models.PlanItem.owner_id == user.id).first()
     if not item:
         raise HTTPException(status_code=404, detail="پارت برنامه یافت نشد")
+    notion_page_id = item.notion_page_id
     db.delete(item)
     db.commit()
+    # صفحه‌ی متناظر توی Notion هم حذف بشه تا از اپ خارج نشه.
+    if notion_page_id and notion_sync.is_configured():
+        try:
+            notion_sync.delete_plan_item_page(notion_page_id)
+        except Exception as e:
+            print(f"[notion delete failed] page={notion_page_id} err={e}")  # توی Railway logs دیده می‌شه
     return {"deleted": True}
 
 

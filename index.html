@@ -363,7 +363,11 @@ a{color:inherit; text-decoration:none;}
       <div class="brand-mark">🎯</div>
       <div class="brand-name">اپکس پلنر</div>
     </div>
-    <div style="display:flex; gap:8px;">
+    <div style="display:flex; gap:8px; align-items:center;">
+      <div id="syncStatus" class="icon-btn" style="position:relative; cursor:default;" title="وضعیت اتصال">
+        <span class="material-symbols-rounded" id="syncStatusIcon" style="font-size:19px; color:var(--text-3);">cloud_done</span>
+        <span id="syncBadge" style="display:none; position:absolute; top:-2px; left:-2px; min-width:16px; height:16px; padding:0 3px; border-radius:8px; background:var(--danger,#ef4444); color:#fff; font-size:9.5px; font-weight:800; align-items:center; justify-content:center;"></span>
+      </div>
       <button class="icon-btn" id="btnAlarms"><span class="material-symbols-rounded" style="font-size:19px;">notifications</span><span class="badge-dot hide" id="alarmDot"></span></button>
       <button class="icon-btn" onclick="go('profile')"><span class="material-symbols-rounded" style="font-size:19px;">person</span></button>
     </div>
@@ -394,6 +398,7 @@ a{color:inherit; text-decoration:none;}
 <div id="toast"><span class="material-symbols-rounded">check_circle</span><span id="toastMsg"></span></div>
 
 <script src="config.js"></script>
+<script src="store.js"></script>
 <script src="api.js"></script>
 <script src="app.js"></script>
 <script src="auth.js"></script>

@@ -88,15 +88,29 @@ async function submitProfile() {
   const name = document.getElementById('pName').value.trim() || DB.profile.name;
   const examTargetLabel = document.getElementById('pGoalLabel').value.trim();
   const goalHoursPerDay = parseInt(document.getElementById('pGoalHours').value) || DB.profile.goalHoursPerDay;
-  try {
-    await Api.updateMe({ display_name: name, exam_target_label: examTargetLabel, goal_hours_per_day: goalHoursPerDay });
+  const payload = { display_name: name, exam_target_label: examTargetLabel, goal_hours_per_day: goalHoursPerDay };
+  const backup = { ...DB.profile };
+  // optimistic: فوراً روی صفحه اعمال می‌شه
+  await withDbLock(async () => {
     DB.profile.name = name;
     DB.profile.examTargetLabel = examTargetLabel;
     DB.profile.goalHoursPerDay = goalHoursPerDay;
-    closeSheet();
+    await persistDbNow();
+  });
+  closeSheet();
+  rerender();
+  try {
+    await Api.updateMe(payload);
+    await persistDbNow();
     showToast('ذخیره شد');
-    rerender();
   } catch (e) {
+    if (isOfflineError(e)) {
+      await queueOp('update', 'profile', { payload });
+      showToast('آفلاین ذخیره شد — با وصل‌شدن اینترنت سینک می‌شه', 'cloud_off');
+      return;
+    }
+    await withDbLock(async () => { Object.assign(DB.profile, backup); await persistDbNow(); });
+    rerender();
     showToast('خطا: ' + e.message, 'error');
   }
 }
@@ -117,7 +131,24 @@ function installPWA() {
   });
 }
 
-function confirmClearAllData() {
+async function confirmClearAllData() {
+  // این عملیات مخرب و برگشت‌ناپذیره، پس اگه آفلاینیم یا تغییرات
+  // سینک‌نشده‌ای در صفن، اصلاً اجازه نمی‌دیم شروع بشه — چون هم نمی‌شه
+  // مطمئن شد همه‌چیز واقعاً از سرور پاک شده، هم ممکنه یه تغییر آفلاینِ
+  // قدیمی بعداً به‌اشتباه روی یه دیتای نیمه‌پاک‌شده اعمال بشه.
+  const uid_ = currentUserId();
+  const pending = uid_ ? await Store.countPending(uid_) : 0;
+  if (!navigator.onLine || pending > 0) {
+    openDialog({
+      icon: 'cloud_off', title: 'الان امکانش نیست',
+      text: pending > 0
+        ? `${fa(pending)} تغییر هنوز آفلاینه و به سرور نرسیده. برای جلوگیری از تداخل، اول باید این تغییرات سینک بشن (به محض وصل‌شدن اینترنت خودکار انجام می‌شه)، بعد دوباره امتحان کن.`
+        : 'برای پاک‌کردن همه‌ی داده‌ها باید آنلاین باشی تا مطمئن بشیم همه‌چیز واقعاً از سرور هم حذف می‌شه.',
+      confirmText: 'باشه', cancelText: null,
+    });
+    return;
+  }
+
   openDialog({
     icon: 'delete_forever', title: 'پاک‌کردن همه داده‌ها',
     text: 'همه برنامه‌ها، سوالات و آزمون‌های حساب تو برای همیشه حذف می‌شن (روی همه‌ی دستگاه‌ها و توی بات هم). این کار قابل بازگشت نیست.',
@@ -132,7 +163,7 @@ function confirmClearAllData() {
           ...DB.exams.map(e => Api.deleteExam(e.id)),
           ...DB.alarms.map(a => Api.deleteAlarm(a.id)),
         ]);
-        await syncFromServer();
+        await syncFromServer(); // این خودش کش محلی رو هم با نسخه‌ی خالی جدید بازنویسی می‌کنه
         showToast('پاک شد');
         go('home');
       } catch (e) {
