@@ -27,6 +27,11 @@ SCREENS.profile = function (root) {
         <div class="li-body"><div class="li-title">ویرایش اطلاعات</div><div class="li-sub">نام و هدف روزانه</div></div>
         <span class="material-symbols-rounded" style="color:var(--text-3);">chevron_left</span>
       </div>
+      <div class="list-row" onclick="openChangePasswordSheet()" style="cursor:pointer;">
+        <div class="li-icon"><span class="material-symbols-rounded">password</span></div>
+        <div class="li-body"><div class="li-title">تغییر رمز عبور</div><div class="li-sub">رمز فعلی رو وارد کن و رمز جدید بساز</div></div>
+        <span class="material-symbols-rounded" style="color:var(--text-3);">chevron_left</span>
+      </div>
       <div class="list-row" onclick="openAlarmsSheet()" style="cursor:pointer;">
         <div class="li-icon"><span class="material-symbols-rounded">alarm</span></div>
         <div class="li-body"><div class="li-title">آلارم‌ها</div><div class="li-sub">${fa(DB.alarms.length)} آلارم فعال</div></div>
@@ -112,6 +117,41 @@ async function submitProfile() {
     await withDbLock(async () => { Object.assign(DB.profile, backup); await persistDbNow(); });
     rerender();
     showToast('خطا: ' + e.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// تغییر رمز عبور (وقتی لاگین هستی و رمز فعلی رو بلدی)
+// ---------------------------------------------------------------------------
+function openChangePasswordSheet() {
+  openSheet(`
+    <h2>تغییر رمز عبور</h2>
+    <div class="field"><label>رمز فعلی</label><input id="pCurPass" type="password" placeholder="رمز الان" /></div>
+    <div class="field"><label>رمز جدید</label><input id="pNewPass" type="password" placeholder="حداقل ۴ کاراکتر" /></div>
+    <div class="field"><label>تکرار رمز جدید</label><input id="pNewPass2" type="password" placeholder="دوباره رمز جدید" /></div>
+    <div id="pPassErr" style="display:none; background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.3); color:var(--danger); font-size:12.5px; padding:10px 12px; border-radius:10px; margin-bottom:8px;"></div>
+    <button class="btn btn-primary" onclick="submitChangePassword()">ذخیره رمز جدید</button>
+  `);
+}
+
+async function submitChangePassword() {
+  const cur = document.getElementById('pCurPass').value;
+  const n1 = document.getElementById('pNewPass').value;
+  const n2 = document.getElementById('pNewPass2').value;
+  const errBox = document.getElementById('pPassErr');
+  const showErr = (msg) => { errBox.textContent = msg; errBox.style.display = 'block'; };
+
+  if (!cur) { showErr('رمز فعلی رو وارد کن'); return; }
+  if (!n1 || n1.length < 4) { showErr('رمز جدید باید حداقل ۴ کاراکتر باشه'); return; }
+  if (n1 !== n2) { showErr('تکرار رمز جدید با رمز جدید یکی نیست'); return; }
+  if (n1 === cur) { showErr('رمز جدید نمی‌تونه همون رمز فعلی باشه'); return; }
+
+  try {
+    await Api.changePassword(cur, n1);
+    closeSheet();
+    showToast('رمز عبور با موفقیت تغییر کرد ✅');
+  } catch (e) {
+    showErr(e.message || 'خطایی پیش اومد');
   }
 }
 
