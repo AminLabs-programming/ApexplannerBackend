@@ -132,6 +132,10 @@ class AnalysisExam(Base):
     manual_start_page = Column(Integer, nullable=True)   # صفحه‌ی شروع سوال ۱
     manual_end_page = Column(Integer, nullable=True)     # صفحه‌ی سوال آخر
     overall_note = Column(Text, nullable=True, default="")  # تحلیل کلی آزمون
+    # پایه‌ی تحصیلی آزمون: 10 | 11 | 12 (دهم/یازدهم/دوازدهم). Nullable برای سازگاری
+    # با آزمون‌های قدیمی که قبل از افزوده‌شدن این فیلد ثبت شده‌اند؛ آزمون‌های جدید
+    # همیشه باید مقدار معتبر داشته باشند (اعتبارسنجی در main.py هنگام ساخت/ویرایش).
+    grade = Column(Integer, nullable=True, default=None)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     owner = relationship("User", back_populates="analysis_exams")
@@ -146,9 +150,23 @@ class AnalysisQuestionNote(Base):
     id = Column(String(32), primary_key=True)
     exam_id = Column(String(32), ForeignKey("analysis_exams.id"), nullable=False, index=True)
     question_number = Column(Integer, nullable=False)
+    # subject: فیلد قدیمیِ متن آزاد (مثلاً کاربر دستی می‌نوشت «ریاضی»). برای سازگاری
+    # با رکوردهای قدیمی نگه داشته شده و دیگر توسط UI جدید نوشته نمی‌شود؛ به‌جایش
+    # هنگام ثبت subject_code معتبر، همین ستون هم با عنوان فارسیِ آن پر می‌شود تا
+    # هر مصرف‌کننده‌ی قدیمی که فقط subject را می‌خواند هم مقدار درست ببیند.
     subject = Column(String(64), nullable=True, default="")
+    # subject_code: کد داخلیِ درس از تاکسونومی ثابت در analysis_taxonomy.py (مثلاً
+    # "calculus2"). دسته‌ی اصلی (ریاضیات/فیزیک/شیمی) از روی همین کد استخراج می‌شود
+    # و جایی ذخیره نمی‌شود تا داده‌ی تکراری/ناسازگار ایجاد نشود.
+    subject_code = Column(String(32), nullable=True, default="", index=True)
     note = Column(Text, nullable=False, default="")
-    is_correct = Column(Boolean, nullable=True, default=None)  # وضعیت خودم توی این سوال (اختیاری)
+    # is_correct: فیلد قدیمیِ سه‌حالته (True/False/None). برای سازگاری با عقب نگه
+    # داشته شده و هم‌زمان با answer_status به‌روزرسانی می‌شود؛ منبع اصلی و صریح
+    # وضعیت پاسخ از این پس answer_status است.
+    is_correct = Column(Boolean, nullable=True, default=None)
+    # answer_status: 'correct' | 'incorrect' | 'unanswered' — وضعیت واقعیِ پاسخ
+    # کاربر به این سؤال در آزمون (نه اینکه آیا تحلیلی برایش نوشته شده یا نه).
+    answer_status = Column(String(16), nullable=False, default="unanswered")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 

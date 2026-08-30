@@ -198,9 +198,11 @@ class AlarmOut(BaseModel):
 # ---------------------------------------------------------------------------
 class AnalysisQuestionNoteCreate(BaseModel):
     question_number: int = Field(ge=1, le=200)
-    subject: str = ""
+    subject: str = ""  # قدیمی/آزاد؛ برای سازگاری نگه داشته شده، UI جدید آن را نمی‌نویسد
+    subject_code: Optional[str] = None  # کد جدید از تاکسونومی ثابت (مثلاً "calculus2")
     note: str = ""
-    is_correct: Optional[bool] = None
+    is_correct: Optional[bool] = None  # قدیمی؛ اگر answer_status نیاید از این مشتق می‌شه
+    answer_status: Optional[str] = None  # 'correct' | 'incorrect' | 'unanswered'
 
 
 class AnalysisQuestionNoteOut(BaseModel):
@@ -208,8 +210,12 @@ class AnalysisQuestionNoteOut(BaseModel):
     exam_id: str
     question_number: int
     subject: str = ""
+    subject_code: str = ""
+    category: str = ""  # مشتق‌شده از subject_code، فقط برای نمایش/راحتیِ فرانت
+    subject_label: str = ""  # عنوان فارسیِ درس (از subject_code یا از subject قدیمی)
     note: str = ""
     is_correct: Optional[bool] = None
+    answer_status: str = "unanswered"
     page: Optional[int] = None  # از question_page_map گرفته و اینجا برای راحتی فرانت اضافه می‌شه
     created_at: datetime
     updated_at: datetime
@@ -223,6 +229,7 @@ class AnalysisExamCreateMeta(BaseModel):
     (این اسکیما فقط برای مستندسازی/اعتبارسنجی مقادیر فرم است)."""
     title: str = Field(min_length=1, max_length=255)
     date: Optional[str] = ""
+    grade: int = Field(..., ge=10, le=12)  # پایه‌ی تحصیلی: 10 | 11 | 12 — الزامی برای آزمون‌های جدید
     question_count: int = Field(ge=1, le=200)
     # اگر تشخیص خودکار جواب نداد، این دو مقدار برای نگاشت خطی استفاده می‌شن
     manual_start_page: Optional[int] = None
@@ -233,6 +240,7 @@ class AnalysisExamCreateMeta(BaseModel):
 class AnalysisExamUpdate(BaseModel):
     title: Optional[str] = None
     date: Optional[str] = None
+    grade: Optional[int] = None
     overall_note: Optional[str] = None
 
 
@@ -248,6 +256,8 @@ class AnalysisExamOut(BaseModel):
     owner_id: int
     title: str
     date: str = ""
+    grade: Optional[int] = None
+    grade_label: str = ""  # مثلاً «دوازدهم»؛ خالی یعنی نامشخص (آزمون قدیمی)
     original_filename: str = ""
     page_count: int
     question_count: int
@@ -269,12 +279,42 @@ class AnalysisExamListOut(BaseModel):
     owner_id: int
     title: str
     date: str = ""
+    grade: Optional[int] = None
+    grade_label: str = ""
     page_count: int
     question_count: int
     mapping_method: str
     overall_note: str = ""
     notes_count: int = 0
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AnalysisNoteWithExamOut(BaseModel):
+    """یک ردیف نتیجه‌ی جست‌وجوی ترکیبی در «بانک تحلیل» (GET /analysis-notes):
+    تحلیلِ یک سؤال به‌همراه اطلاعات کافی از آزمونِ مادرش، تا فرانت بدون
+    درخواست‌های اضافه بتونه هم فهرست رو نشون بده هم کاربر رو مستقیم به همون
+    سؤال داخل همون آزمون ببره."""
+    id: str
+    exam_id: str
+    exam_title: str
+    exam_date: str = ""
+    exam_grade: Optional[int] = None
+    exam_grade_label: str = ""
+    question_number: int
+    subject: str = ""
+    subject_code: str = ""
+    category: str = ""
+    category_label: str = ""
+    subject_label: str = ""
+    note: str = ""
+    is_correct: Optional[bool] = None
+    answer_status: str = "unanswered"
+    page: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

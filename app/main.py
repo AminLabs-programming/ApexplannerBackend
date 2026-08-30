@@ -13,14 +13,16 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from . import models, schemas, auth, notion_sync, analysis_pdf
+from urllib.parse import quote
+
+from . import models, schemas, auth, notion_sync, analysis_pdf, analysis_taxonomy
 from .database import get_db, init_db
 
 app = FastAPI(title="Apex Planner API", version="1.0.0")
@@ -484,10 +486,25 @@ def _analysis_exam_path(pdf_filename: str) -> str:
     return os.path.join(ANALYSIS_UPLOAD_DIR, pdf_filename)
 
 
+def _ascii_fallback_filename(name: str) -> str:
+    """نسخه‌ی ASCII-only از نام فایل، فقط به‌عنوان fallback در کنار پارامتر
+    filename*=UTF-8'' (چون پارامتر ساده‌ی filename در Content-Disposition طبق
+    استاندارد برای غیر-ASCII مثل فارسی تضمینی نداره؛ کلاینت‌های خیلی قدیمی که
+    filename* رو نمی‌فهمن حداقل همین نسخه‌ی ساده رو می‌بینن)."""
+    base, _ext = os.path.splitext(name or "")
+    ascii_base = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "-_ .") else "_" for ch in base).strip("_ .")
+    return f"{ascii_base or 'exam'}.pdf"
+
+
 def _analysis_note_out(n: models.AnalysisQuestionNote, page_map: dict) -> schemas.AnalysisQuestionNoteOut:
+    subject_code = n.subject_code or ""
+    category = analysis_taxonomy.category_of(subject_code)
+    subject_label = analysis_taxonomy.subject_label(subject_code) or (n.subject or "")
     return schemas.AnalysisQuestionNoteOut(
         id=n.id, exam_id=n.exam_id, question_number=n.question_number,
-        subject=n.subject or "", note=n.note or "", is_correct=n.is_correct,
+        subject=n.subject or "", subject_code=subject_code, category=category,
+        subject_label=subject_label, note=n.note or "",
+        is_correct=n.is_correct, answer_status=n.answer_status or "unanswered",
         page=page_map.get(str(n.question_number)) or page_map.get(n.question_number),
         created_at=n.created_at, updated_at=n.updated_at,
     )
@@ -504,6 +521,7 @@ def _analysis_exam_out(e: models.AnalysisExam, db: Session) -> schemas.AnalysisE
     )
     return schemas.AnalysisExamOut(
         id=e.id, owner_id=e.owner_id, title=e.title, date=e.date or "",
+        grade=e.grade, grade_label=analysis_taxonomy.grade_label(e.grade),
         original_filename=e.original_filename or "", page_count=e.page_count,
         question_count=e.question_count, question_page_map=page_map_int,
         mapping_method=e.mapping_method,
@@ -516,6 +534,7 @@ def _analysis_exam_out(e: models.AnalysisExam, db: Session) -> schemas.AnalysisE
 def _analysis_exam_list_out(e: models.AnalysisExam, notes_count: int) -> schemas.AnalysisExamListOut:
     return schemas.AnalysisExamListOut(
         id=e.id, owner_id=e.owner_id, title=e.title, date=e.date or "",
+        grade=e.grade, grade_label=analysis_taxonomy.grade_label(e.grade),
         page_count=e.page_count, question_count=e.question_count,
         mapping_method=e.mapping_method, overall_note=e.overall_note or "",
         notes_count=notes_count, created_at=e.created_at,
@@ -523,13 +542,17 @@ def _analysis_exam_list_out(e: models.AnalysisExam, notes_count: int) -> schemas
 
 
 @app.get("/analysis-exams", response_model=List[schemas.AnalysisExamListOut])
-def list_analysis_exams(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    items = (
-        db.query(models.AnalysisExam)
-        .filter(models.AnalysisExam.owner_id == user.id)
-        .order_by(models.AnalysisExam.created_at.desc())
-        .all()
-    )
+def list_analysis_exams(
+    grade: Optional[int] = None,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(models.AnalysisExam).filter(models.AnalysisExam.owner_id == user.id)
+    if grade is not None:
+        if not analysis_taxonomy.is_valid_grade(grade):
+            raise HTTPException(status_code=400, detail="پایه‌ی تحصیلی نامعتبر است")
+        q = q.filter(models.AnalysisExam.grade == grade)
+    items = q.order_by(models.AnalysisExam.created_at.desc()).all()
     out = []
     for e in items:
         cnt = db.query(models.AnalysisQuestionNote).filter(models.AnalysisQuestionNote.exam_id == e.id).count()
@@ -549,6 +572,7 @@ def get_analysis_exam(exam_id: str, user: models.User = Depends(get_current_user
 async def create_analysis_exam(
     title: str = Form(...),
     date: str = Form(""),
+    grade: int = Form(...),
     question_count: int = Form(...),
     manual_start_page: Optional[int] = Form(None),
     manual_end_page: Optional[int] = Form(None),
@@ -559,6 +583,8 @@ async def create_analysis_exam(
 ):
     if not (1 <= question_count <= 200):
         raise HTTPException(status_code=400, detail="تعداد سوال باید بین ۱ تا ۲۰۰ باشد")
+    if not analysis_taxonomy.is_valid_grade(grade):
+        raise HTTPException(status_code=400, detail="پایه‌ی تحصیلی را مشخص کنید (دهم، یازدهم یا دوازدهم)")
     if pdf.content_type not in ("application/pdf", "application/octet-stream") and not (pdf.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="فقط فایل PDF مجاز است")
 
@@ -613,6 +639,7 @@ async def create_analysis_exam(
 
     e = models.AnalysisExam(
         id=exam_id, owner_id=user.id, title=title, date=date or "",
+        grade=grade,
         pdf_filename=pdf_filename, original_filename=pdf.filename or "",
         page_count=page_count, question_count=question_count,
         question_page_map_json=json.dumps({str(k): v for k, v in final_map.items()}, ensure_ascii=False),
@@ -635,6 +662,10 @@ def update_analysis_exam(exam_id: str, payload: schemas.AnalysisExamUpdate, user
         e.title = payload.title
     if payload.date is not None:
         e.date = payload.date
+    if payload.grade is not None:
+        if not analysis_taxonomy.is_valid_grade(payload.grade):
+            raise HTTPException(status_code=400, detail="پایه‌ی تحصیلی نامعتبر است (باید ۱۰، ۱۱ یا ۱۲ باشد)")
+        e.grade = payload.grade
     if payload.overall_note is not None:
         e.overall_note = payload.overall_note
     db.commit()
@@ -712,8 +743,21 @@ def get_analysis_exam_pdf(exam_id: str, token: Optional[str] = None, download: O
     # -----------------------------------------------------------------------
     disposition_type = "attachment" if download else "inline"
     response = FileResponse(pdf_path, media_type="application/pdf")
-    safe_filename = filename.replace('"', "")
-    response.headers["Content-Disposition"] = f'{disposition_type}; filename="{safe_filename}"'
+    # -----------------------------------------------------------------------
+    # اسم فایل تقریباً همیشه فارسیه (مثلاً «آزمون جامع شماره ۳.pdf»). پارامتر
+    # ساده‌ی filename="..." در Content-Disposition طبق RFC 6266 فقط برای
+    # ASCII تضمین‌شده‌ست؛ خیلی از سرورها/کتابخانه‌ها بایت‌های غیر-ASCII رو یا
+    # drop می‌کنن یا mangle می‌کنن (که باعث می‌شه اسم فایل دانلودی خراب یا
+    # generic بشه). راه‌حل استاندارد RFC 5987 هست: هم یک fallback ASCII-only
+    # با filename= می‌فرستیم (برای کلاینت‌های خیلی قدیمی)، هم نسخه‌ی
+    # UTF-8 percent-encoded رو با filename*= — که همه‌ی مرورگرهای مدرن ازش
+    # پشتیبانی می‌کنن و اسم فارسیِ درست رو نشون می‌دن/دانلود می‌کنن.
+    # -----------------------------------------------------------------------
+    ascii_fallback = _ascii_fallback_filename(filename)
+    encoded_filename = quote(filename.replace('"', ""))
+    response.headers["Content-Disposition"] = (
+        f"{disposition_type}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_filename}"
+    )
     return response
 
 
@@ -742,6 +786,31 @@ def upsert_analysis_note(exam_id: str, payload: schemas.AnalysisQuestionNoteCrea
     if payload.question_number > e.question_count:
         raise HTTPException(status_code=400, detail=f"این آزمون فقط {e.question_count} سوال دارد")
 
+    # --- وضعیت پاسخ: answer_status منبعِ اصلیه؛ اگه نیومد، برای سازگاری با
+    # کلاینت‌های قدیمی از is_correct مشتق می‌شه. is_correct قدیمی هم همیشه
+    # هم‌گام با answer_status ذخیره می‌شه (سازگاری با عقب). ---
+    if payload.answer_status is not None:
+        if not analysis_taxonomy.is_valid_answer_status(payload.answer_status):
+            raise HTTPException(status_code=400, detail="وضعیت پاسخ نامعتبر است")
+        answer_status = payload.answer_status
+    else:
+        answer_status = analysis_taxonomy.answer_status_from_legacy(payload.is_correct)
+    is_correct = analysis_taxonomy.legacy_is_correct_from_status(answer_status)
+
+    # --- دسته/درس: subject_code منبعِ اصلیه؛ دسته‌ی اصلی همیشه از روی همین
+    # کد مشتق می‌شه (ذخیره نمی‌شه، تا داده‌ی تکراری نداشته باشیم). اگه
+    # subject_code معتبر داده بشه، ستون قدیمیِ subject هم با عنوان فارسی‌ش
+    # پر می‌شه تا مصرف‌کننده‌های قدیمی هم مقدار درست ببینن؛ اگه نیاد، متن
+    # آزادِ قدیمی (اگر فرستاده شده) دست‌نخورده ذخیره می‌شه. ---
+    subject_code = (payload.subject_code or "").strip()
+    if subject_code:
+        if not analysis_taxonomy.is_valid_subject_code(subject_code):
+            raise HTTPException(status_code=400, detail="کد درس نامعتبر است")
+        subject_text = analysis_taxonomy.subject_label(subject_code)
+    else:
+        subject_code = ""
+        subject_text = payload.subject or ""
+
     existing = (
         db.query(models.AnalysisQuestionNote)
         .filter(models.AnalysisQuestionNote.exam_id == exam_id, models.AnalysisQuestionNote.question_number == payload.question_number)
@@ -749,16 +818,19 @@ def upsert_analysis_note(exam_id: str, payload: schemas.AnalysisQuestionNoteCrea
     )
     now = datetime.utcnow()
     if existing:
-        existing.subject = payload.subject or ""
+        existing.subject = subject_text
+        existing.subject_code = subject_code
         existing.note = payload.note or ""
-        existing.is_correct = payload.is_correct
+        existing.is_correct = is_correct
+        existing.answer_status = answer_status
         existing.updated_at = now
         n = existing
     else:
         n = models.AnalysisQuestionNote(
             id=new_id(), exam_id=exam_id, question_number=payload.question_number,
-            subject=payload.subject or "", note=payload.note or "",
-            is_correct=payload.is_correct, created_at=now, updated_at=now,
+            subject=subject_text, subject_code=subject_code, note=payload.note or "",
+            is_correct=is_correct, answer_status=answer_status,
+            created_at=now, updated_at=now,
         )
         db.add(n)
     db.commit()
@@ -778,6 +850,74 @@ def delete_analysis_note(exam_id: str, note_id: str, user: models.User = Depends
     db.delete(n)
     db.commit()
     return {"deleted": True}
+
+
+@app.get("/analysis-notes", response_model=List[schemas.AnalysisNoteWithExamOut])
+def list_analysis_notes_filtered(
+    grade: Optional[int] = None,
+    category: Optional[str] = None,
+    subject: Optional[str] = None,
+    status_: Optional[str] = Query(None, alias="status"),
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """جست‌وجوی ترکیبی در کل «بانک تحلیل» (همه‌ی آزمون‌های کاربر با هم)، نه
+    فقط یک آزمون: بر اساس پایه‌ی آزمون + دسته‌ی اصلی/درس سؤال + وضعیت پاسخ.
+    هر ترکیبی از این چهار فیلتر با AND روی هم اعمال می‌شه؛ هر کدوم که داده
+    نشه نادیده گرفته می‌شه (یعنی «همه»). این همون فیلتر ترکیبی/تاریخچه‌ایه
+    که در مراحل ۵ و ۸ سندِ کار خواسته شده. نتیجه بین همه‌ی آزمون‌ها گروه‌بندی
+    می‌شه (جدیدترین آزمون اول، داخل هر آزمون بر اساس شماره‌ی سؤال)."""
+    if grade is not None and not analysis_taxonomy.is_valid_grade(grade):
+        raise HTTPException(status_code=400, detail="پایه‌ی تحصیلی نامعتبر است")
+    if category is not None and not analysis_taxonomy.is_valid_category(category):
+        raise HTTPException(status_code=400, detail="دسته‌ی اصلی نامعتبر است")
+    if subject is not None and not analysis_taxonomy.is_valid_subject_code(subject):
+        raise HTTPException(status_code=400, detail="کد درس نامعتبر است")
+    if status_ is not None and not analysis_taxonomy.is_valid_answer_status(status_):
+        raise HTTPException(status_code=400, detail="وضعیت پاسخ نامعتبر است")
+    if subject and category and analysis_taxonomy.category_of(subject) != category:
+        raise HTTPException(status_code=400, detail="درس انتخاب‌شده متعلق به این دسته‌ی اصلی نیست")
+
+    q = (
+        db.query(models.AnalysisQuestionNote, models.AnalysisExam)
+        .join(models.AnalysisExam, models.AnalysisQuestionNote.exam_id == models.AnalysisExam.id)
+        .filter(models.AnalysisExam.owner_id == user.id)
+    )
+    if grade is not None:
+        q = q.filter(models.AnalysisExam.grade == grade)
+    if status_ is not None:
+        q = q.filter(models.AnalysisQuestionNote.answer_status == status_)
+    if subject:
+        q = q.filter(models.AnalysisQuestionNote.subject_code == subject)
+    elif category:
+        codes = analysis_taxonomy.subject_codes_for_category(category)
+        # اگه دسته‌ای بدون هیچ کد معتبری بود (نباید پیش بیاد چون بالاتر
+        # اعتبارسنجی شده)، یک فیلتر همیشه-کاذب می‌ذاریم که چیزی برنگرده
+        q = q.filter(models.AnalysisQuestionNote.subject_code.in_(codes or ["__none__"]))
+
+    q = q.order_by(models.AnalysisExam.created_at.desc(), models.AnalysisQuestionNote.question_number.asc())
+    rows = q.all()
+
+    out: List[schemas.AnalysisNoteWithExamOut] = []
+    page_map_cache: Dict[str, dict] = {}
+    for n, e in rows:
+        if e.id not in page_map_cache:
+            page_map_cache[e.id] = json.loads(e.question_page_map_json or "{}")
+        page_map = page_map_cache[e.id]
+        subject_code = n.subject_code or ""
+        cat = analysis_taxonomy.category_of(subject_code)
+        out.append(schemas.AnalysisNoteWithExamOut(
+            id=n.id, exam_id=e.id, exam_title=e.title, exam_date=e.date or "",
+            exam_grade=e.grade, exam_grade_label=analysis_taxonomy.grade_label(e.grade),
+            question_number=n.question_number,
+            subject=n.subject or "", subject_code=subject_code, category=cat,
+            category_label=analysis_taxonomy.category_label(cat),
+            subject_label=analysis_taxonomy.subject_label(subject_code) or (n.subject or ""),
+            note=n.note or "", is_correct=n.is_correct, answer_status=n.answer_status or "unanswered",
+            page=page_map.get(str(n.question_number)) or page_map.get(n.question_number),
+            created_at=n.created_at, updated_at=n.updated_at,
+        ))
+    return out
 
 
 # ---------------------------------------------------------------------------

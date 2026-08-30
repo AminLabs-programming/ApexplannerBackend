@@ -59,3 +59,44 @@ def _run_lightweight_migrations():
             if "password_reset_expires" not in existing_user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN password_reset_expires TIMESTAMP"))
                 conn.commit()
+
+    # --- بانک تحلیل: پایه‌ی تحصیلی آزمون ---
+    if "analysis_exams" in table_names:
+        existing_exam_cols = {c["name"] for c in inspector.get_columns("analysis_exams")}
+        if "grade" not in existing_exam_cols:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE analysis_exams ADD COLUMN grade INTEGER"))
+                conn.commit()
+            # داده‌ی قدیمی: هیچ پایه‌ای برای آزمون‌های قبلی قابل‌استنتاج نیست، پس
+            # NULL (= «نامشخص») می‌ماند؛ کاربر می‌تواند بعداً از UI ویرایش کند.
+
+    # --- بانک تحلیل: دسته‌بندی درس و وضعیت پاسخ هر سؤال ---
+    if "analysis_question_notes" in table_names:
+        existing_note_cols = {c["name"] for c in inspector.get_columns("analysis_question_notes")}
+        col_type_str32 = "VARCHAR(32)" if not DATABASE_URL.startswith("sqlite") else "TEXT"
+        col_type_str16 = "VARCHAR(16)" if not DATABASE_URL.startswith("sqlite") else "TEXT"
+
+        if "subject_code" not in existing_note_cols:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE analysis_question_notes ADD COLUMN subject_code {col_type_str32}"))
+                conn.commit()
+            # داده‌ی قدیمی: متن آزادِ subject قابل نگاشت مطمئن به کدهای تاکسونومی
+            # جدید نیست (هر چیزی می‌توانست باشد)، پس subject_code خالی می‌ماند و
+            # ستون قدیمی subject دست‌نخورده باقی می‌ماند تا چیزی گم نشود.
+
+        if "answer_status" not in existing_note_cols:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE analysis_question_notes ADD COLUMN answer_status {col_type_str16}"))
+                conn.commit()
+                # Backfill از روی ستون قدیمیِ is_correct، برای هر سه حالت به‌صورت
+                # صریح (IS TRUE/IS FALSE/IS NULL برای سازگاری هم با SQLite هم Postgres):
+                conn.execute(text(
+                    "UPDATE analysis_question_notes SET answer_status = 'correct' WHERE is_correct IS TRUE"
+                ))
+                conn.execute(text(
+                    "UPDATE analysis_question_notes SET answer_status = 'incorrect' WHERE is_correct IS FALSE"
+                ))
+                conn.execute(text(
+                    "UPDATE analysis_question_notes SET answer_status = 'unanswered' WHERE is_correct IS NULL"
+                ))
+                conn.commit()
