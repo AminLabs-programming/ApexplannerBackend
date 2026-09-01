@@ -51,6 +51,9 @@ SCREENS.plan = function (root) {
     <button class="btn btn-primary" style="margin-top:18px;" onclick="openAddPlanSheet('${dateStr}')">
       <span class="material-symbols-rounded" style="font-size:19px;">add</span> افزودن پارت جدید
     </button>
+    <button class="btn btn-ghost" style="margin-top:10px;" onclick="onCarryOverClick('${dateStr}')">
+      <span class="material-symbols-rounded" style="font-size:19px;">sync_alt</span> ساخت پارت جبرانی از روز قبل
+    </button>
   `;
 
   const filtered = planFilter === 'all' ? items : items.filter(i => i.category === planFilter);
@@ -70,10 +73,33 @@ function shiftPlanDate(delta) {
   rerender();
 }
 
+// ساخت دستی پارت‌های جبرانی: پارت‌های انجام‌نشده‌ی روزِ *قبلِ* روزی که کاربر
+// الان توی صفحه‌ی برنامه داره می‌بینه، برای همون روز کپی می‌شن. قبلاً این کار
+// خودکار و هر بار باز شدن اپ انجام می‌شد؛ الان فقط با همین دکمه انجام می‌شه.
+function onCarryOverClick(dateStr) {
+  const prevDateStr = Jalali.addDays(dateStr, -1);
+  const jp = Jalali.gregorianStrToJalaliParts(prevDateStr);
+  const prevLabel = `${fa(jp.jd)} ${Jalali.MONTHS[jp.jm - 1]}`;
+  openDialog({
+    icon: 'sync_alt', title: 'ساخت پارت جبرانی',
+    text: `پارت‌های انجام‌نشده‌ی ${prevLabel} به‌عنوان «(جبرانی)» برای این روز ساخته بشن؟`,
+    confirmText: 'بساز', confirmClass: 'btn-primary',
+    onConfirm: async () => {
+      try {
+        const count = await carryOverUnfinished(prevDateStr, dateStr);
+        closeDialog();
+        if (count > 0) showToast(`${fa(count)} پارت جبرانی ساخته شد`);
+        else showToast('پارت انجام‌نشده‌ای برای جبران کردن نبود');
+        rerender();
+      } catch (e) { closeDialog(); }
+    }
+  });
+}
+
 function renderPlanItemRowFull(item) {
   return `
     <div class="plan-item ${item.status ? 'done' : ''}" data-id="${item.id}">
-      <div class="check-circle ${item.status ? 'done' : ''}" onclick="onTogglePlanItem('${item.id}')">
+      <div class="check-circle ${item.status ? 'done' : ''}" onclick="openEditPlanSheet('${item.id}')">
         <span class="material-symbols-rounded" style="font-size:15px;">check</span>
       </div>
       <div style="flex:1; min-width:0;" onclick="openEditPlanSheet('${item.id}')">
@@ -120,10 +146,14 @@ function openAddPlanSheet(dateStr) {
   wireSeg('fCatSeg');
 }
 
-function wireSeg(id) {
+function wireSeg(id, onChange) {
   const seg = document.getElementById(id);
   seg.querySelectorAll('button').forEach(b => {
-    b.onclick = () => { seg.querySelectorAll('button').forEach(x => x.classList.remove('active')); b.classList.add('active'); };
+    b.onclick = () => {
+      seg.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      if (onChange) onChange();
+    };
   });
 }
 
@@ -147,6 +177,7 @@ function toIsoForInput(gStr) { return gStr; } // already YYYY-MM-DD
 function openEditPlanSheet(id) {
   const item = getItemById(id);
   if (!item) return;
+  const isLesson = item.category === 'درسی';
   openSheet(`
     <h2>ویرایش پارت</h2>
     <div class="field"><label>عنوان</label><input id="eName" type="text" value="${escapeHtml(item.name)}" /></div>
@@ -157,16 +188,24 @@ function openEditPlanSheet(id) {
         ${CATEGORIES.map(c => `<button type="button" class="${c===item.category?'active':''}" data-cat="${c}">${c}</button>`).join('')}
       </div>
     </div>
-    ${item.category === 'درسی' ? `
-    <div class="field"><label>دقیقه مطالعه</label><input id="eMinutes" type="number" min="0" value="${item.studyMinutes}" /></div>
-    <div class="field"><label>تعداد تست</label><input id="eTests" type="number" min="0" value="${item.testCount}" /></div>
-    ` : ''}
+    <div id="eLessonFields" style="display:${isLesson ? 'block' : 'none'};">
+      <div class="field"><label>دقیقه مطالعه</label><input id="eMinutes" type="number" min="0" value="${item.studyMinutes || 0}" /></div>
+      <div class="field"><label>تعداد تست</label><input id="eTests" type="number" min="0" value="${item.testCount || 0}" /></div>
+    </div>
+    <div class="field" style="display:flex; align-items:center; justify-content:space-between;">
+      <label style="margin:0;">انجام شد</label>
+      <label class="switch"><input id="eStatus" type="checkbox" ${item.status ? 'checked' : ''}><span class="slider"></span></label>
+    </div>
     <div class="btn-row">
       <button class="btn btn-primary" onclick="submitEditPlan('${id}')">ذخیره</button>
       <button class="btn btn-danger-ghost" onclick="confirmDeleteItem('${id}')">حذف</button>
     </div>
   `);
-  wireSeg('eCatSeg');
+  wireSeg('eCatSeg', () => {
+    const cat = document.querySelector('#eCatSeg button.active').dataset.cat;
+    const lessonFields = document.getElementById('eLessonFields');
+    if (lessonFields) lessonFields.style.display = cat === 'درسی' ? 'block' : 'none';
+  });
 }
 
 async function submitEditPlan(id) {
@@ -176,11 +215,12 @@ async function submitEditPlan(id) {
     name: document.getElementById('eName').value.trim() || item.name,
     date: document.getElementById('eDate').value || item.date,
     category: document.querySelector('#eCatSeg button.active').dataset.cat,
+    status: document.getElementById('eStatus').checked,
   };
   const mEl = document.getElementById('eMinutes');
   const tEl = document.getElementById('eTests');
-  if (mEl) patch.studyMinutes = parseInt(mEl.value) || 0;
-  if (tEl) patch.testCount = parseInt(tEl.value) || 0;
+  if (mEl && mEl.offsetParent !== null) patch.studyMinutes = parseInt(mEl.value) || 0;
+  if (tEl && tEl.offsetParent !== null) patch.testCount = parseInt(tEl.value) || 0;
   try {
     await updatePlanItemRemote(id, patch);
     closeSheet();
@@ -204,30 +244,10 @@ function confirmDeleteItem(id) {
 }
 
 // ---------------------------------------------------------------------------
-// Study log sheet — when checking off a "درسی" item, ask minutes + tests
-// (mirrors the bot's _study_report_state flow)
+// نکته: قبلاً زدن روی دایره‌ی چک باعث می‌شد یه شیت جدا («ثبت مطالعه» فقط با
+// دقیقه/تست) باز بشه، ولی زدن روی خودِ کارت شیت دیگه‌ای («ویرایش پارت» با
+// عنوان/تاریخ/دسته ولی بدون تیک انجام‌شدن) رو باز می‌کرد. این دو تا رفتار
+// متفاوت بودن و هیچ‌کدوم کامل نبودن. الان هر دو (چه دایره چه کارت) دقیقاً
+// همون openEditPlanSheet رو باز می‌کنن که همه‌چیز (عنوان، تاریخ، دسته،
+// دقیقه، تست، تیک انجام‌شدن) رو یکجا داره — چه توی تب خانه چه توی تب برنامه.
 // ---------------------------------------------------------------------------
-function openStudyLogSheet(id) {
-  const item = getItemById(id);
-  if (!item) return;
-  openSheet(`
-    <h2>ثبت مطالعه — ${escapeHtml(item.name)}</h2>
-    <p style="font-size:12.5px; color:var(--text-2); margin-top:-10px; margin-bottom:16px;">چند دقیقه خوندی و چند تا تست زدی؟</p>
-    <div class="field"><label>دقیقه مطالعه</label><input id="sMinutes" type="number" min="0" placeholder="مثلاً ۹۰" autofocus /></div>
-    <div class="field"><label>تعداد تست</label><input id="sTests" type="number" min="0" placeholder="مثلاً ۲۰" /></div>
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="submitStudyLog('${id}', true)">تکمیل شد ✅</button>
-      <button class="btn btn-ghost" onclick="submitStudyLog('${id}', false)">ناقص، فعلاً همین</button>
-    </div>
-  `);
-}
-async function submitStudyLog(id, markDone) {
-  const minutes = parseInt(document.getElementById('sMinutes').value) || 0;
-  const tests = parseInt(document.getElementById('sTests').value) || 0;
-  try {
-    await saveStudyData(id, minutes, tests, markDone);
-    closeSheet();
-    showToast(markDone ? 'عالی بود! ثبت شد 🎉' : 'ثبت شد، بعداً ادامه بده');
-    rerender();
-  } catch (e) { /* توست خطا داخل saveStudyData نمایش داده می‌شه */ }
-}
