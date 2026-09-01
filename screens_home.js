@@ -120,7 +120,7 @@ function categoryClass(cat) {
 function renderPlanItemRow(item) {
   return `
     <div class="plan-item ${item.status ? 'done' : ''}" data-id="${item.id}">
-      <div class="check-circle ${item.status ? 'done' : ''}" onclick="onTogglePlanItem('${item.id}')">
+      <div class="check-circle ${item.status ? 'done' : ''}" onclick="openEditPlanSheet('${item.id}')">
         <span class="material-symbols-rounded" style="font-size:15px;">check</span>
       </div>
       <div style="flex:1; min-width:0;" onclick="openEditPlanSheet('${item.id}')">
@@ -132,17 +132,4 @@ function renderPlanItemRow(item) {
         </div>
       </div>
     </div>`;
-}
-
-async function onTogglePlanItem(id) {
-  const item = getItemById(id);
-  if (!item) return;
-  if (!item.status && item.category === 'درسی') {
-    openStudyLogSheet(id);
-  } else {
-    try {
-      await markItemDone(id, !item.status);
-      rerender();
-    } catch (e) { /* توست خطا داخل markItemDone نمایش داده می‌شه */ }
-  }
 }
