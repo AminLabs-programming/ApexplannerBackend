@@ -1,26 +1,113 @@
 /* =========================================================================
    صفحه مطالعه — تایمر (پومودورو/شمارش‌معکوس/آزاد) + هشدار پایان
+   ---------------------------------------------------------------------
+   نکات مهم رفع‌باگ:
+   ۱) قبل از شروع تایمر، یه شیت باز می‌شه که کاربر یکی از پارت‌های امروزش
+      رو انتخاب می‌کنه (یا «مطالعه آزاد بدون پارت»). این انتخاب توی
+      TimerState.linkedItemId ذخیره می‌شه تا موقع پایان/توقف، زمان مطالعه
+      (و تست‌ها) مستقیماً روی همون پارت برنامه ثبت بشه — چه آنلاین چه آفلاین
+      (saveStudyData از همون لایه‌ی offline-first خودِ اپ استفاده می‌کنه).
+   ۲) TimerState دیگه با شمارش «ثانیه به ثانیه» توی حافظه کار نمی‌کنه، چون
+      با پس‌زمینه رفتن/کشته‌شدن تب یا اپ، setInterval متوقف می‌شه و زمان از
+      دست می‌ره. به‌جاش فقط زمان «شروع» و «مکث‌های قبلی جمع‌شده» (به میلی‌ثانیه
+      واقعی Date.now()) نگه داشته می‌شه و هر بار (چه با tick هر ثانیه، چه بعد
+      از برگشتن به اپ بعد از چند دقیقه) از روی همین زمان واقعی محاسبه می‌شه.
+      این وضعیت هم توی localStorage ذخیره می‌شه تا با بستن/باز کردن کامل اپ
+      هم گم نشه و تایمر دقیقاً از همون‌جا که بوده ادامه پیدا کنه.
    ========================================================================= */
+
+const TIMER_LS_KEY = 'apex_timer_state_v1';
+
 const TimerState = {
   mode: 'pomodoro',       // pomodoro | countdown | stopwatch
-  totalSeconds: 25 * 60,
-  remainingSeconds: 25 * 60,
+  totalSeconds: 25 * 60,  // برای stopwatch بی‌معنیه (۰)
   running: false,
   subject: '',
-  intervalId: null,
-  startedAt: null
+  linkedItemId: null,     // id پارت برنامه‌ی امروز که این جلسه بهش وصله (یا null = آزاد)
+  linkedItemName: '',     // برای نمایش، حتی اگه بعداً پارت حذف/تغییر کنه
+  startedAtMs: null,      // Date.now() لحظه‌ی شروع/ازسرگیریِ اجرای فعلی؛ وقتی paused است null
+  accumulatedMs: 0,       // مجموع زمانِ سپری‌شده‌ی قبل از این اجرای فعلی (بعد از هر pause جمع می‌شه)
+  intervalId: null        // فقط برای رفرش نمایش هر ثانیه؛ منبع حقیقت نیست
 };
 
 const POMO_PRESETS = { pomodoro: 25 * 60, short: 5 * 60, long: 15 * 60 };
 
+// ---------------------------------------------------------------------------
+// محاسبه‌ی زمان واقعی سپری‌شده از روی timestamp ها (نه از شمارش دستی)
+// ---------------------------------------------------------------------------
+function timerElapsedMs() {
+  const running = TimerState.running && TimerState.startedAtMs;
+  const live = running ? (Date.now() - TimerState.startedAtMs) : 0;
+  return TimerState.accumulatedMs + live;
+}
+function timerElapsedSeconds() {
+  return Math.floor(timerElapsedMs() / 1000);
+}
+function timerRemainingSeconds() {
+  if (TimerState.mode === 'stopwatch') return timerElapsedSeconds();
+  return Math.max(0, TimerState.totalSeconds - timerElapsedSeconds());
+}
+
+function persistTimerState() {
+  try {
+    localStorage.setItem(TIMER_LS_KEY, JSON.stringify({
+      mode: TimerState.mode,
+      totalSeconds: TimerState.totalSeconds,
+      running: TimerState.running,
+      subject: TimerState.subject,
+      linkedItemId: TimerState.linkedItemId,
+      linkedItemName: TimerState.linkedItemName,
+      startedAtMs: TimerState.startedAtMs,
+      accumulatedMs: TimerState.accumulatedMs
+    }));
+  } catch (e) { /* بی‌اهمیت — تایمر با حافظه‌ی رم هم کار می‌کنه، فقط resilience کمتر */ }
+}
+
+function restoreTimerState() {
+  try {
+    const raw = localStorage.getItem(TIMER_LS_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    Object.assign(TimerState, {
+      mode: s.mode || 'pomodoro',
+      totalSeconds: typeof s.totalSeconds === 'number' ? s.totalSeconds : 25 * 60,
+      running: !!s.running,
+      subject: s.subject || '',
+      linkedItemId: s.linkedItemId || null,
+      linkedItemName: s.linkedItemName || '',
+      startedAtMs: s.startedAtMs || null,
+      accumulatedMs: s.accumulatedMs || 0
+    });
+    // اگه تایمر «در حال اجرا» ذخیره شده بود (یعنی وقتی اپ بسته/پس‌زمینه شد
+    // متوقف نکرده بودیمش)، همچنان در حال اجرا در نظرش می‌گیریم — چون منبع
+    // زمان، ساعت واقعی سیستمه، نه یه شمارنده که با بسته‌شدن اپ متوقف بشه.
+    if (TimerState.running) startInterval();
+  } catch (e) { /* اگه خراب بود، نادیده بگیر و از پیش‌فرض شروع کن */ }
+}
+
+// اگه شمارش‌معکوس/پومودورو موقع بسته بودن اپ به صفر رسیده باشه، همین الان
+// (لحظه‌ی باز شدن اپ) جلسه رو خودکار ببند و ثبتش کن.
+function checkTimerAutoFinishOnResume() {
+  if (!TimerState.running || TimerState.mode === 'stopwatch') return;
+  if (timerRemainingSeconds() <= 0) {
+    playChime();
+    showToast('زمان تموم شد! دمت گرم 🎉', 'celebration');
+    finishTimerSession(true);
+  }
+}
+
 SCREENS.timer = function (root) {
-  const percent = TimerState.totalSeconds > 0
-    ? Math.max(0, Math.min(1, (TimerState.totalSeconds - TimerState.remainingSeconds) / TimerState.totalSeconds))
-    : 0;
+  const remainingSeconds = timerRemainingSeconds();
+  const percent = TimerState.mode === 'stopwatch'
+    ? 0
+    : (TimerState.totalSeconds > 0
+      ? Math.max(0, Math.min(1, (TimerState.totalSeconds - remainingSeconds) / TimerState.totalSeconds))
+      : 0);
   const circumference = 2 * Math.PI * 125;
   const offset = circumference * (1 - percent);
-  const mm = String(Math.floor(TimerState.remainingSeconds / 60)).padStart(2, '0');
-  const ss = String(TimerState.remainingSeconds % 60).padStart(2, '0');
+  const mm = String(Math.floor(remainingSeconds / 60)).padStart(2, '0');
+  const ss = String(remainingSeconds % 60).padStart(2, '0');
+  const hasElapsed = timerElapsedSeconds() > 0;
 
   const recentSessions = [...DB.sessions].reverse().slice(0, 5);
 
@@ -29,9 +116,14 @@ SCREENS.timer = function (root) {
     <p class="page-sub">تمرکز کن، زمان رو بسپار به ما</p>
 
     <div class="card glass" style="text-align:center; padding:8px 12px 18px;">
-      <input id="timerSubject" type="text" placeholder="روی چه درسی کار می‌کنی؟" value="${escapeHtml(TimerState.subject)}"
-        style="background:transparent; border:none; text-align:center; font-size:14px; font-weight:700; color:var(--text-1); width:100%; padding:14px 6px 0; outline:none;"
-        oninput="TimerState.subject=this.value" />
+      <button class="btn btn-ghost" style="width:100%; margin-top:2px;" onclick="openTimerPartPickerSheet()">
+        <span class="material-symbols-rounded" style="font-size:19px;">menu_book</span>
+        ${TimerState.linkedItemName ? escapeHtml(TimerState.linkedItemName) : 'انتخاب پارت امروز برای این جلسه'}
+      </button>
+
+      <input id="timerSubject" type="text" placeholder="یادداشت کوتاه (اختیاری)" value="${escapeHtml(TimerState.subject)}"
+        style="background:transparent; border:none; text-align:center; font-size:14px; font-weight:700; color:var(--text-1); width:100%; padding:10px 6px 0; outline:none;"
+        oninput="TimerState.subject=this.value; persistTimerState();" />
 
       <div class="timer-orbit">
         <div class="timer-ring-wrap">
@@ -48,7 +140,7 @@ SCREENS.timer = function (root) {
           </svg>
           <div class="timer-center">
             <div class="timer-display">${fa(mm)}:${fa(ss)}</div>
-            <div class="timer-label">${TimerState.running ? 'در حال مطالعه…' : (TimerState.remainingSeconds===TimerState.totalSeconds ? 'آماده شروع' : 'مکث شده')}</div>
+            <div class="timer-label">${TimerState.running ? 'در حال مطالعه…' : (!hasElapsed ? 'آماده شروع' : 'مکث شده')}</div>
           </div>
         </div>
       </div>
@@ -121,48 +213,77 @@ SCREENS.timer = function (root) {
 };
 
 function setTimerMode(mode) {
-  stopInterval();
+  // اگه جلسه‌ای در حال اجراست، عوض کردن حالت نباید زمانش رو گم کنه —
+  // ولی برای سادگی و جلوگیری از قاطی‌شدن دو نوع تایمر، عوض کردن حالت وقتی
+  // چیزی در حال شمارشه غیرمجازه؛ کاربر اول باید پایان بده یا ریست کنه.
+  if (TimerState.running || timerElapsedSeconds() > 0) {
+    showToast('اول تایمر فعلی رو تموم یا ریست کن');
+    return;
+  }
   TimerState.mode = mode;
-  TimerState.running = false;
-  if (mode === 'pomodoro') { TimerState.totalSeconds = POMO_PRESETS.pomodoro; TimerState.remainingSeconds = POMO_PRESETS.pomodoro; }
-  else if (mode === 'countdown') { TimerState.totalSeconds = 30*60; TimerState.remainingSeconds = 30*60; }
-  else { TimerState.totalSeconds = 0; TimerState.remainingSeconds = 0; }
+  if (mode === 'pomodoro') TimerState.totalSeconds = POMO_PRESETS.pomodoro;
+  else if (mode === 'countdown') TimerState.totalSeconds = 30 * 60;
+  else TimerState.totalSeconds = 0;
+  persistTimerState();
   rerender();
 }
 function setCountdownMinutes(min) {
-  stopInterval();
-  TimerState.totalSeconds = min*60; TimerState.remainingSeconds = min*60; TimerState.running = false;
+  if (TimerState.running || timerElapsedSeconds() > 0) {
+    showToast('اول تایمر فعلی رو تموم یا ریست کن');
+    return;
+  }
+  TimerState.totalSeconds = min * 60;
+  persistTimerState();
   rerender();
 }
 function resetTimer() {
   stopInterval();
   TimerState.running = false;
-  if (TimerState.mode === 'stopwatch') TimerState.remainingSeconds = 0;
-  else TimerState.remainingSeconds = TimerState.totalSeconds;
+  TimerState.startedAtMs = null;
+  TimerState.accumulatedMs = 0;
+  TimerState.linkedItemId = null;
+  TimerState.linkedItemName = '';
+  persistTimerState();
   rerender();
 }
 function toggleTimer() {
-  if (TimerState.running) { stopInterval(); TimerState.running = false; rerender(); return; }
+  if (TimerState.running) {
+    // Pause: زمانِ این اجرا رو جمع کن و startedAtMs رو خالی کن.
+    TimerState.accumulatedMs += Date.now() - TimerState.startedAtMs;
+    TimerState.startedAtMs = null;
+    TimerState.running = false;
+    stopInterval();
+    persistTimerState();
+    rerender();
+    return;
+  }
+  // Start/Resume: اگه هنوز هیچ پارتی برای این جلسه انتخاب نشده و جلسه‌ی
+  // تازه‌ایه (چیزی جمع نشده)، اول شیت انتخاب پارت رو باز کن؛ تایمر فقط
+  // بعد از انتخاب کاربر (یا زدن «مطالعه آزاد») واقعاً شروع می‌شه.
+  if (!TimerState.linkedItemId && timerElapsedSeconds() === 0) {
+    openTimerPartPickerSheet(true);
+    return;
+  }
   TimerState.running = true;
-  TimerState.startedAt = TimerState.startedAt || Date.now();
+  TimerState.startedAtMs = Date.now();
+  persistTimerState();
+  startInterval();
+  rerender();
+}
+function startInterval() {
+  stopInterval();
   TimerState.intervalId = setInterval(() => {
-    if (TimerState.mode === 'stopwatch') {
-      TimerState.remainingSeconds += 1;
-      TimerState.totalSeconds = TimerState.remainingSeconds; // keep ring meaningful-ish
-    } else {
-      TimerState.remainingSeconds -= 1;
-      if (TimerState.remainingSeconds <= 0) {
-        TimerState.remainingSeconds = 0;
-        stopInterval(); TimerState.running = false;
-        playChime();
-        showToast('زمان تموم شد! دمت گرم 🎉', 'celebration');
-        finishTimerSession(true);
-        return;
-      }
+    if (!TimerState.running) { stopInterval(); return; }
+    if (TimerState.mode !== 'stopwatch' && timerRemainingSeconds() <= 0) {
+      stopInterval();
+      TimerState.running = false;
+      playChime();
+      showToast('زمان تموم شد! دمت گرم 🎉', 'celebration');
+      finishTimerSession(true);
+      return;
     }
     if (currentScreen === 'timer') updateTimerDisplayOnly();
   }, 1000);
-  rerender();
 }
 function stopInterval() {
   if (TimerState.intervalId) { clearInterval(TimerState.intervalId); TimerState.intervalId = null; }
@@ -171,31 +292,58 @@ function updateTimerDisplayOnly() {
   const disp = document.querySelector('.timer-display');
   const ring = document.querySelector('.timer-ring-fg');
   if (!disp) return;
-  const mm = String(Math.floor(TimerState.remainingSeconds / 60)).padStart(2, '0');
-  const ss = String(TimerState.remainingSeconds % 60).padStart(2, '0');
+  const remainingSeconds = timerRemainingSeconds();
+  const mm = String(Math.floor(remainingSeconds / 60)).padStart(2, '0');
+  const ss = String(remainingSeconds % 60).padStart(2, '0');
   disp.textContent = `${fa(mm)}:${fa(ss)}`;
-  if (ring && TimerState.totalSeconds > 0) {
-    const percent = Math.max(0, Math.min(1, (TimerState.totalSeconds - TimerState.remainingSeconds) / TimerState.totalSeconds));
+  if (ring && TimerState.mode !== 'stopwatch' && TimerState.totalSeconds > 0) {
+    const percent = Math.max(0, Math.min(1, (TimerState.totalSeconds - remainingSeconds) / TimerState.totalSeconds));
     const circumference = 2 * Math.PI * 125;
     ring.style.strokeDashoffset = circumference * (1 - percent);
   }
 }
-function finishTimerSession(auto) {
-  const elapsedSeconds = TimerState.mode === 'stopwatch'
-    ? TimerState.remainingSeconds
-    : (TimerState.totalSeconds - TimerState.remainingSeconds);
+async function finishTimerSession(auto) {
+  // زمانِ اجرای جاری (اگه هنوز در حال اجراست) رو هم به مجموع اضافه کن.
+  if (TimerState.running && TimerState.startedAtMs) {
+    TimerState.accumulatedMs += Date.now() - TimerState.startedAtMs;
+  }
+  const elapsedSeconds = Math.floor(TimerState.accumulatedMs / 1000);
   const minutes = Math.round(elapsedSeconds / 60);
   stopInterval();
   TimerState.running = false;
+  TimerState.startedAtMs = null;
+
   if (minutes >= 1) {
-    DB.sessions.push({ id: uid(), date: Jalali.todayStr(), subject: TimerState.subject || 'مطالعه آزاد', minutes, mode: TimerState.mode });
-    // sessions فقط محلی‌ان (به سرور نمی‌رن)، پس همیشه باید توی کش هم
-    // ذخیره بشن وگرنه با بستن اپ گم می‌شن.
+    // ۱) تاریخچه‌ی محلیِ جلسات (فقط نمایشی، برای «جلسات اخیر»).
+    DB.sessions.push({
+      id: uid(), date: Jalali.todayStr(),
+      subject: TimerState.linkedItemName || TimerState.subject || 'مطالعه آزاد',
+      minutes, mode: TimerState.mode
+    });
     persistDbSoon();
+
+    // ۲) اگه این جلسه به یه پارت واقعی برنامه وصل بود، دقیقه‌ی مطالعه (و
+    //    تست‌های قبلی‌اش، دست‌نخورده) رو مستقیم روی همون پارت ثبت کن —
+    //    saveStudyData از همون مسیر آفلاین-اول خودِ اپ استفاده می‌کنه، پس
+    //    چه آنلاین چه آفلاین (با صف‌شدن و سینک خودکار بعداً) کار می‌کنه.
+    if (TimerState.linkedItemId) {
+      const item = getItemById(TimerState.linkedItemId);
+      if (item) {
+        const newMinutes = (item.studyMinutes || 0) + minutes;
+        try {
+          await saveStudyData(TimerState.linkedItemId, newMinutes, item.testCount || 0, true);
+        } catch (e) { /* خطا از خودِ saveStudyData به کاربر نشون داده می‌شه */ }
+      }
+    }
+
     if (!auto) showToast(`${formatMinutes(minutes)} ثبت شد`);
   }
-  TimerState.remainingSeconds = TimerState.mode === 'stopwatch' ? 0 : TimerState.totalSeconds;
-  if (!auto) rerender();
+
+  TimerState.accumulatedMs = 0;
+  TimerState.linkedItemId = null;
+  TimerState.linkedItemName = '';
+  persistTimerState();
+  if (!auto) rerender(); else if (currentScreen === 'timer') rerender();
 }
 function playChime() {
   try {
@@ -316,6 +464,95 @@ function checkAlarmsLoop() {
 }
 
 Object.defineProperty(window, 'TimerState', { get() { return TimerState; }, configurable: true });
+
+// ---------------------------------------------------------------------------
+// شیت انتخاب پارت امروز — قبل از شروع تایمر باز می‌شه
+// ---------------------------------------------------------------------------
+function openTimerPartPickerSheet(autoStartAfterPick) {
+  const today = Jalali.todayStr();
+  const todaysLessonItems = DB.planItems
+    .filter(i => i.category === 'درسی' && i.date === today)
+    .sort((a, b) => (a.status === b.status) ? 0 : (a.status ? 1 : -1));
+
+  openSheet(`
+    <h2>روی کدوم پارت کار می‌کنی؟</h2>
+    <p style="font-size:12.5px; color:var(--text-2); margin-top:-10px; margin-bottom:16px;">
+      یکی از پارت‌های امروزت رو انتخاب کن تا زمان مطالعه مستقیم روش ثبت بشه.
+    </p>
+
+    ${todaysLessonItems.length ? `
+    <div class="card" style="padding:6px;">
+      ${todaysLessonItems.map(i => `
+        <div class="list-row" style="cursor:pointer;" onclick="pickTimerPart('${i.id}', ${autoStartAfterPick ? 'true' : 'false'})">
+          <div class="li-icon"><span class="material-symbols-rounded">${i.status ? 'check_circle' : 'radio_button_unchecked'}</span></div>
+          <div class="li-body">
+            <div class="li-title">${escapeHtml(i.name)}</div>
+            <div class="li-sub">${formatMinutes(i.studyMinutes || 0)}${i.testCount ? ` · ${fa(i.testCount)} تست` : ''}</div>
+          </div>
+        </div>`).join('')}
+    </div>` : `
+    <div class="card" style="padding:14px; text-align:center; color:var(--text-2); font-size:13px;">
+      برای امروز پارت درسی‌ای توی برنامه نداری.
+    </div>`}
+
+    <button class="btn btn-ghost" style="margin-top:14px;" onclick="pickTimerPart(null, ${autoStartAfterPick ? 'true' : 'false'})">
+      <span class="material-symbols-rounded" style="font-size:19px;">self_improvement</span>
+      مطالعه آزاد (بدون وصل‌کردن به پارت)
+    </button>
+  `);
+}
+
+function pickTimerPart(itemId, autoStart) {
+  if (itemId) {
+    const item = getItemById(itemId);
+    TimerState.linkedItemId = itemId;
+    TimerState.linkedItemName = item ? item.name : '';
+  } else {
+    TimerState.linkedItemId = null;
+    TimerState.linkedItemName = '';
+  }
+  persistTimerState();
+  closeSheet();
+  if (autoStart) {
+    TimerState.running = true;
+    TimerState.startedAtMs = Date.now();
+    persistTimerState();
+    startInterval();
+  }
+  if (currentScreen === 'timer') rerender();
+}
+
+// ---------------------------------------------------------------------------
+// زنده‌ماندنِ تایمر با پس‌زمینه‌رفتن/برگشتنِ اپ:
+// چون منبع حقیقتِ زمان، startedAtMs واقعی (Date.now) است نه یه شمارنده‌ی
+// setInterval، خودِ setInterval نیازی نیست حتماً پیوسته اجرا بشه؛ فقط برای
+// آپدیت زنده‌ی نمایش لازمه. با هر بار که تب/اپ دوباره دیده می‌شه (resume)،
+// بلافاصله زمان از روی ساعت واقعی بازمحاسبه و نمایش تازه می‌شه، و اگه
+// شمارش‌معکوس توی این فاصله تموم شده باشه، همون لحظه جلسه بسته می‌شه.
+// ---------------------------------------------------------------------------
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    checkTimerAutoFinishOnResume();
+    if (currentScreen === 'timer') { updateTimerDisplayOnly(); rerender(); }
+  }
+});
+window.addEventListener('pageshow', () => {
+  checkTimerAutoFinishOnResume();
+  if (currentScreen === 'timer') rerender();
+});
+
+// اپ رو با آخرین وضعیت تایمر (اگه از قبل چیزی ذخیره شده بود) بالا بیار.
+// توجه: این فایل قبل از بالا اومدنِ کامل DB (که توی bootAfterLogin بعد از
+// DOMContentLoaded پر می‌شه) لود و اجرا می‌شه، پس چک «تموم‌شدنِ خودکار» که
+// به DB.sessions/getItemById نیاز داره باید بعد از آماده‌شدنِ DB اجرا بشه،
+// نه همین‌جا در زمان parse شدنِ اسکریپت.
+restoreTimerState();
+window.addEventListener('DOMContentLoaded', () => {
+  // یه تیک صبر می‌کنیم تا bootAfterLogin (که خودش async است) فرصت کنه DB
+  // رو پر کنه؛ چون هر دو روی همون DOMContentLoaded ثبت شدن و ترتیب دقیق
+  // اجراشون تضمین‌شده نیست.
+  setTimeout(() => { if (window.DB) checkTimerAutoFinishOnResume(); }, 300);
+});
 
 // ---------------------------------------------------------------------------
 // ثبت دستی مطالعه — برای وقتی که با کرنومتر شخصی/خارج از اپ خوندی و فقط
