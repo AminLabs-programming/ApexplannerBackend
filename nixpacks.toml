@@ -1,13 +1,11 @@
 providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python312"]
+nixPkgs = ["python312", "python312Packages.pip"]
 
 [phases.install]
 cmds = [
-  "python -m ensurepip --upgrade",
-  "python -m pip install --no-cache-dir --upgrade pip",
-  "python -m pip install --no-cache-dir -r requirements.txt"
+  "python -m pip install --no-cache-dir --break-system-packages -r requirements.txt"
 ]
 
 [start]
